@@ -16,4 +16,10 @@ struct event {
   bool exit_event;
 };
 
+struct profile_block {
+  int tid;
+  unsigned long long start_time_ns;
+  int offcpu_component;
+};
+
 #endif /* __PENSIEVE_H */

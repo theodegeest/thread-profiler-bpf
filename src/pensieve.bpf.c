@@ -17,6 +17,13 @@ struct {
 } exec_start SEC(".maps");
 
 struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 8192);
+  __type(key, pid_t);
+  __type(value, u64);
+} scheduled_out_start SEC(".maps");
+
+struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
@@ -109,3 +116,72 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx) {
   bpf_ringbuf_submit(e, 0);
   return 0;
 }
+
+static int handle_sched_switch(void *ctx, bool preempt,
+                               struct task_struct *prev,
+                               struct task_struct *next) {
+  // struct internal_key *i_keyp, i_key;
+  // struct val_t *valp, val;
+  s64 delta;
+  // u32 pid;
+  pid_t pid, tgid;
+  u64 *scheduled_out_ts_p, scheduled_out_ts;
+
+  // Handle the task that is scheduled out
+  pid = BPF_CORE_READ(prev, pid);
+  tgid = BPF_CORE_READ(prev, tgid);
+
+  // bpf_printk("handle_sched_switch [%d] from (%d, %d) to (%d, %d)\n",
+  //            bpf_get_smp_processor_id(), pid, tgid, BPF_CORE_READ(next, pid),
+  //            BPF_CORE_READ(next, tgid));
+
+  // The scheduled out thread was not the idle thread
+  if (pid) {
+    scheduled_out_ts = bpf_ktime_get_ns();
+    bpf_map_update_elem(&scheduled_out_start, &pid, &scheduled_out_ts, 0);
+  }
+
+  pid = BPF_CORE_READ(next, pid);
+  tgid = BPF_CORE_READ(next, tgid);
+
+  // The newly scheduled thread is the idle thread
+  if (!pid)
+    return 0;
+
+  scheduled_out_ts_p = bpf_map_lookup_elem(&scheduled_out_start, &pid);
+  if (!scheduled_out_ts_p) {
+    bpf_printk("handle_sched_switch [%d] pid (%d, %d) not found in "
+               "scheduled_out_start\n",
+               bpf_get_smp_processor_id(), pid, tgid);
+    return 0;
+  }
+  delta = (s64)(bpf_ktime_get_ns() - *scheduled_out_ts_p);
+  if (delta < 0)
+    goto cleanup;
+
+  // bpf_printk(
+  //     "handle_sched_switch [%d] pid (%d, %d) was scheduled out for %lld ns\n",
+  //     bpf_get_smp_processor_id(), pid, tgid, delta);
+
+  // delta /= 1000U;
+  // valp = bpf_map_lookup_elem(&info, &i_keyp->key);
+  // if (!valp)
+  //   goto cleanup;
+  // __sync_fetch_and_add(&valp->delta, delta);
+
+cleanup:
+  bpf_map_delete_elem(&scheduled_out_start, &pid);
+  return 0;
+}
+
+SEC("tp_btf/sched_switch")
+int BPF_PROG(sched_switch, bool preempt, struct task_struct *prev,
+             struct task_struct *next) {
+  return handle_sched_switch(ctx, preempt, prev, next);
+}
+
+// SEC("raw_tp/sched_switch")
+// int BPF_PROG(sched_switch_raw, bool preempt, struct task_struct *prev,
+//              struct task_struct *next) {
+//   return handle_sched_switch(ctx, preempt, prev, next);
+// }
