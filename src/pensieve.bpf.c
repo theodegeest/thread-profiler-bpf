@@ -4,10 +4,24 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <math.h>
 
 #include "pensieve.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
+
+const volatile unsigned long long granularity_ns = 1e9;
+
+typedef enum thread_state {
+  SCHEDULED_OUT = 0,
+  SCHEDUDED_IN = 1,
+} thread_state_t;
+
+struct internal_thread_info {
+  u64 thread_creation_ts;
+  u64 block_start_ts;
+  thread_state_t state;
+};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -22,6 +36,13 @@ struct {
   __type(key, pid_t);
   __type(value, u64);
 } scheduled_out_start SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 8192);
+  __type(key, pid_t);
+  __type(value, struct internal_thread_info);
+} thread_map SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -117,6 +138,15 @@ int handle_exit(struct trace_event_raw_sched_process_template *ctx) {
   return 0;
 }
 
+static s64 start_of_block(u64 current_time, u64 start_time) {
+  if (current_time < start_time) {
+    bpf_printk("start_of_block [%d] current is before start time\n");
+    return -1;
+  }
+  long n = floor((current_time - start_time) / granularity_ns);
+  return start_time + n * granularity_ns;
+}
+
 static int handle_sched_switch(void *ctx, bool preempt,
                                struct task_struct *prev,
                                struct task_struct *next) {
@@ -160,8 +190,8 @@ static int handle_sched_switch(void *ctx, bool preempt,
     goto cleanup;
 
   // bpf_printk(
-  //     "handle_sched_switch [%d] pid (%d, %d) was scheduled out for %lld ns\n",
-  //     bpf_get_smp_processor_id(), pid, tgid, delta);
+  //     "handle_sched_switch [%d] pid (%d, %d) was scheduled out for %lld
+  //     ns\n", bpf_get_smp_processor_id(), pid, tgid, delta);
 
   // delta /= 1000U;
   // valp = bpf_map_lookup_elem(&info, &i_keyp->key);
@@ -185,3 +215,22 @@ int BPF_PROG(sched_switch, bool preempt, struct task_struct *prev,
 //              struct task_struct *next) {
 //   return handle_sched_switch(ctx, preempt, prev, next);
 // }
+
+// Thread creation
+SEC("tracepoint/sched/sched_process_fork")
+int trace_fork(struct trace_event_raw_sched_process_fork *ctx) {
+  bpf_printk("fork parent=%d child=%d\n", ctx->parent_pid, ctx->child_pid);
+
+  return 0;
+}
+
+#define EXIT_COMM_LEN 16
+// Thread destruction
+SEC("tracepoint/sched/sched_process_exit")
+int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
+  char comm[TASK_COMM_LEN] = {};
+  bpf_get_current_comm(&comm, sizeof(comm));
+  // ctx->pid = thread id
+  bpf_printk("exit: tid=%d, comm = %s \n", ctx->pid, comm);
+  return 0;
+}
