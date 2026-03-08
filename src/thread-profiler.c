@@ -8,8 +8,8 @@
 #include <sys/resource.h>
 #include <time.h>
 
-#include "pensieve.h"
-#include "pensieve.skel.h"
+#include "thread-profiler.h"
+#include "thread-profiler.skel.h"
 #include "trace_helpers.h"
 
 static struct env {
@@ -19,16 +19,16 @@ static struct env {
   pid_t tids[MAX_TID_NR];
 } env;
 
-const char *argp_program_version = "pensieve 0.0";
+const char *argp_program_version = "thread_profiler 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
 const char argp_program_doc[] =
     "Perform per thread event profiling.\n"
     "\n"
-    "USAGE: pensieve [--help] [-p PID] [-t TID]"
+    "USAGE: thread-profiler [--help] [-p PID] [-t TID]"
     "EXAMPLES:\n"
-    "    pensieve             # profile all threads until Ctrl-C\n"
-    "    pensieve -p 185,175,165 # only profile threads for PID 185,175,165\n"
-    "    pensieve -t 188,120,134 # only profile threads 188,120,134\n";
+    "    thread-profiler             # profile all threads until Ctrl-C\n"
+    "    thread-profiler -p 185,175,165 # only profile threads for PID 185,175,165\n"
+    "    thread-profiler -t 188,120,134 # only profile threads 188,120,134\n";
 
 static const struct argp_option opts[] = {
     {"pid", 'p', "PID", 0, "Profile these PIDs only, comma-separated list", 0},
@@ -139,7 +139,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
 
 int main(int argc, char **argv) {
   struct ring_buffer *rb = NULL;
-  struct pensieve_bpf *skel;
+  struct thread_profiler_bpf *skel;
   int pids_fd, tids_fd, err, i;
   __u8 val = 0;
 
@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
   signal(SIGTERM, sig_handler);
 
   /* Load and verify BPF application */
-  skel = pensieve_bpf__open();
+  skel = thread_profiler_bpf__open();
   if (!skel) {
     fprintf(stderr, "Failed to open and load BPF skeleton\n");
     return 1;
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
     skel->rodata->filter_by_pid = true;
 
   /* Load & verify BPF programs */
-  err = pensieve_bpf__load(skel);
+  err = thread_profiler_bpf__load(skel);
   if (err) {
     fprintf(stderr, "Failed to load and verify BPF skeleton\n");
     goto cleanup;
@@ -201,7 +201,7 @@ int main(int argc, char **argv) {
   }
 
   /* Attach tracepoints */
-  err = pensieve_bpf__attach(skel);
+  err = thread_profiler_bpf__attach(skel);
   if (err) {
     fprintf(stderr, "Failed to attach BPF skeleton\n");
     goto cleanup;
@@ -234,7 +234,7 @@ int main(int argc, char **argv) {
 cleanup:
   /* Clean up */
   ring_buffer__free(rb);
-  pensieve_bpf__destroy(skel);
+  thread_profiler_bpf__destroy(skel);
 
   return err < 0 ? -err : 0;
 }

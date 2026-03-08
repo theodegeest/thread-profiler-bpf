@@ -6,7 +6,7 @@
 #include <bpf/bpf_tracing.h>
 #include <math.h>
 
-#include "pensieve.h"
+#include "thread-profiler.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 

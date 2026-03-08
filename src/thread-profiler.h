@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
 /* Copyright (c) 2020 Facebook */
-#ifndef __PENSIEVE_H
-#define __PENSIEVE_H
+#ifndef __THREAD_PROFILER_H
+#define __THREAD_PROFILER_H
 
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 127
@@ -39,4 +39,4 @@ struct profile_block {
   thread_state_t end_state;
 };
 
-#endif /* __PENSIEVE_H */
+#endif /* __THREAD_PROFILER_H */

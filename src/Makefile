@@ -21,7 +21,7 @@ INCLUDES := -I$(OUTPUT) -I../libbpf/include/uapi -I$(dir $(VMLINUX))
 CFLAGS := -g -Wall
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
 
-APPS = pensieve
+APPS = thread-profiler
 
 COMMON_OBJ = \
 	$(OUTPUT)/trace_helpers.o \
