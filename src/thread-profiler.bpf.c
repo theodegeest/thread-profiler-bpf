@@ -10,8 +10,9 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-const volatile unsigned long long granularity_ns = 1e9;
-// const volatile unsigned long long granularity_ns = 1e6;
+// const volatile unsigned long long granularity_ns = 1e9; // Second
+const volatile unsigned long long granularity_ns = 1e8; // 0.1 Second
+// const volatile unsigned long long granularity_ns = 1e6; // Millisecond
 const volatile bool filter_by_tgid = false;
 const volatile bool filter_by_pid = false;
 

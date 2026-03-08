@@ -27,7 +27,8 @@ const char argp_program_doc[] =
     "USAGE: thread-profiler [--help] [-p PID] [-t TID]"
     "EXAMPLES:\n"
     "    thread-profiler             # profile all threads until Ctrl-C\n"
-    "    thread-profiler -p 185,175,165 # only profile threads for PID 185,175,165\n"
+    "    thread-profiler -p 185,175,165 # only profile threads for PID "
+    "185,175,165\n"
     "    thread-profiler -t 188,120,134 # only profile threads 188,120,134\n";
 
 static const struct argp_option opts[] = {
@@ -96,9 +97,9 @@ static const struct argp argp = {
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
                            va_list args) {
-  if (level == LIBBPF_DEBUG && !env.verbose)
-    return 0;
-  return vfprintf(stderr, format, args);
+  if (level == LIBBPF_WARN)
+    return vfprintf(stderr, format, args);
+  return 0;
 }
 
 static volatile bool exiting = false;
@@ -218,6 +219,7 @@ int main(int argc, char **argv) {
   /* Process events */
   printf("%-8s %-5s %-16s %-7s %-7s %s\n", "TIME", "EVENT", "COMM", "PID",
          "PPID", "FILENAME/EXIT CODE");
+  fflush(stdout);
   while (!exiting) {
     err = ring_buffer__poll(rb, 100 /* timeout, ms */);
     /* Ctrl-C will cause -EINTR */
@@ -230,6 +232,8 @@ int main(int argc, char **argv) {
       break;
     }
   }
+
+  fflush(stdout);
 
 cleanup:
   /* Clean up */
