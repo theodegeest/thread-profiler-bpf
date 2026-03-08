@@ -6,8 +6,8 @@
 #define TASK_COMM_LEN 16
 #define MAX_FILENAME_LEN 127
 
-#define MAX_PID_NR		30
-#define MAX_TID_NR		30
+#define MAX_PID_NR 30
+#define MAX_TID_NR 30
 
 struct event {
   int pid;
@@ -29,8 +29,18 @@ typedef enum thread_state {
 const char *thread_state_name[] = {"SCHEDULED_OUT", "SCHEDULED_IN",
                                    "THREAD_CREATE", "THREAD_EXIT"};
 
+struct internal_thread_info {
+  unsigned long long thread_creation_ts;
+  unsigned long long block_index;
+  unsigned long long block_start_ts;
+  unsigned long long first_block_event_ts;
+  unsigned long long last_event_ts;
+  unsigned long long offcpu_time_ns;
+  thread_state_t state;
+};
+
 struct profile_block {
-  int pid;
+  int tid;
   unsigned long long block_index;
   unsigned long long block_start_time_ns;
   unsigned long long first_event_time_ns;

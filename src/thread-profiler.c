@@ -106,8 +106,17 @@ static volatile bool exiting = false;
 
 static void sig_handler(int sig) { exiting = true; }
 
+static void print_profile_block(struct profile_block *profile_block_p) {
+  printf("%d %llu %llu %llu %llu %llu %s\n", profile_block_p->tid,
+         profile_block_p->block_index, profile_block_p->block_start_time_ns,
+         profile_block_p->first_event_time_ns,
+         profile_block_p->last_event_time_ns, profile_block_p->offcpu_time_ns,
+         thread_state_name[profile_block_p->end_state]);
+}
+
 static int handle_event(void *ctx, void *data, size_t data_sz) {
-  const struct profile_block *profile_block_p = data;
+  struct profile_block *profile_block_p = data;
+  print_profile_block(profile_block_p);
   // struct tm *tm;
   // char ts[32];
   // time_t t;
@@ -127,15 +136,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
   //          e->ppid, e->filename);
   // }
 
-  printf("profile_block: (%d), blk_id = %llu, blk_start = %llu, fst_event = "
-         "%llu, lst_event = %llu, offcpu = %llu, end_state = %s\n",
-         profile_block_p->pid, profile_block_p->block_index,
-         profile_block_p->block_start_time_ns,
-         profile_block_p->first_event_time_ns,
-         profile_block_p->last_event_time_ns, profile_block_p->offcpu_time_ns,
-         thread_state_name[profile_block_p->end_state]);
-
   return 0;
+}
+
+uint64_t get_ns() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
 int main(int argc, char **argv) {
@@ -217,8 +224,8 @@ int main(int argc, char **argv) {
   }
 
   /* Process events */
-  printf("%-8s %-5s %-16s %-7s %-7s %s\n", "TIME", "EVENT", "COMM", "PID",
-         "PPID", "FILENAME/EXIT CODE");
+  printf("%s %s %s %s %s %s %s\n", "TID", "BLOCK_INDEX", "BLOCK_START_TIME",
+         "FIRST_EVENT_TIME", "LAST_EVENT_TIME", "OFFCPU_TIME", "END_STATE");
   fflush(stdout);
   while (!exiting) {
     err = ring_buffer__poll(rb, 100 /* timeout, ms */);
@@ -230,6 +237,28 @@ int main(int argc, char **argv) {
     if (err < 0) {
       printf("Error polling perf buffer: %d\n", err);
       break;
+    }
+  }
+  int map_fd = bpf_map__fd(skel->maps.thread_map);
+
+  pid_t key, next_key;
+  struct internal_thread_info value;
+
+  /* get first key */
+  if (bpf_map_get_next_key(map_fd, NULL, &next_key) == 0) {
+    // There is at least one key
+    while (1) {
+      key = next_key;
+
+      if (bpf_map_lookup_elem(map_fd, &key, &value) == 0) {
+        printf("%d %llu %llu %llu %llu %llu %s %lu\n", key, value.block_index,
+               value.block_start_ts, value.first_block_event_ts,
+               value.last_event_ts, value.offcpu_time_ns,
+               thread_state_name[value.state], get_ns());
+      }
+
+      if (bpf_map_get_next_key(map_fd, &key, &next_key) != 0)
+        break;
     }
   }
 

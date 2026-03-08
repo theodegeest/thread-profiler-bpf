@@ -16,16 +16,6 @@ const volatile unsigned long long granularity_ns = 1e8; // 0.1 Second
 const volatile bool filter_by_tgid = false;
 const volatile bool filter_by_pid = false;
 
-struct internal_thread_info {
-  u64 thread_creation_ts;
-  u64 block_index;
-  u64 block_start_ts;
-  u64 first_block_event_ts;
-  u64 last_event_ts;
-  u64 offcpu_time_ns;
-  thread_state_t state;
-};
-
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 8192);
@@ -210,7 +200,7 @@ static int submit_current_block(pid_t pid,
   if (!profile_block_p)
     return 0;
 
-  profile_block_p->pid = pid;
+  profile_block_p->tid = pid;
   profile_block_p->block_index = info_p->block_index;
   profile_block_p->block_start_time_ns = info_p->block_start_ts;
   profile_block_p->first_event_time_ns = info_p->first_block_event_ts;
@@ -409,7 +399,6 @@ SEC("tracepoint/sched/sched_process_fork")
 int trace_fork(struct trace_event_raw_sched_process_fork *ctx) {
   pid_t pid, tgid;
   struct internal_thread_info *info_p, info = {};
-
 
   pid = ctx->child_pid;
   tgid = ctx->parent_pid;
