@@ -12,6 +12,8 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 const volatile unsigned long long granularity_ns = 1e9;
 // const volatile unsigned long long granularity_ns = 1e6;
+const volatile bool filter_by_tgid = false;
+const volatile bool filter_by_pid = false;
 
 struct internal_thread_info {
   u64 thread_creation_ts;
@@ -45,11 +47,40 @@ struct {
 } thread_map SEC(".maps");
 
 struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, u32);
+  __type(value, u8);
+  __uint(max_entries, MAX_PID_NR);
+} tgids SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __type(key, u32);
+  __type(value, u8);
+  __uint(max_entries, MAX_TID_NR);
+} pids SEC(".maps");
+
+struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
 
 const volatile unsigned long long min_duration_ns = 0;
+
+static bool allowed_pid_tgid(pid_t pid, pid_t tgid) {
+  if (filter_by_tgid && !bpf_map_lookup_elem(&tgids, &tgid))
+    return false;
+  if (filter_by_pid && !bpf_map_lookup_elem(&pids, &pid))
+    return false;
+  return true;
+}
+
+static bool allowed_task(struct task_struct *task) {
+  u32 pid = BPF_CORE_READ(task, pid);
+  u32 tgid = BPF_CORE_READ(task, tgid);
+
+  return allowed_pid_tgid(pid, tgid);
+}
 
 // SEC("tp/sched/sched_process_exec")
 // int handle_exec(struct trace_event_raw_sched_process_exec *ctx) {
@@ -226,7 +257,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
   current_time = bpf_ktime_get_ns();
 
   // The scheduled out thread was not the idle thread
-  if (pid) {
+  if (pid && allowed_task(prev)) {
     // scheduled_out_ts = current_time;
     // bpf_map_update_elem(&scheduled_out_start, &pid, &scheduled_out_ts, 0);
 
@@ -277,7 +308,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
   tgid = BPF_CORE_READ(next, tgid);
 
   // The newly scheduled thread is the idle thread
-  if (!pid)
+  if (!pid || !allowed_task(next))
     return 0;
 
   // scheduled_out_ts_p = bpf_map_lookup_elem(&scheduled_out_start, &pid);
@@ -375,12 +406,18 @@ int BPF_PROG(sched_switch, bool preempt, struct task_struct *prev,
 // Thread creation
 SEC("tracepoint/sched/sched_process_fork")
 int trace_fork(struct trace_event_raw_sched_process_fork *ctx) {
-  pid_t pid;
+  pid_t pid, tgid;
   struct internal_thread_info *info_p, info = {};
 
-  bpf_printk("fork parent=%d child=%d\n", ctx->parent_pid, ctx->child_pid);
 
   pid = ctx->child_pid;
+  tgid = ctx->parent_pid;
+
+  if (!allowed_pid_tgid(pid, tgid)) {
+    return 0;
+  }
+
+  bpf_printk("fork parent=%d child=%d\n", ctx->parent_pid, ctx->child_pid);
 
   info_p = bpf_map_lookup_elem(&thread_map, &pid);
   if (info_p) {
@@ -404,22 +441,28 @@ int trace_fork(struct trace_event_raw_sched_process_fork *ctx) {
   return 0;
 }
 
-#define EXIT_COMM_LEN 16
 // Thread destruction
 SEC("tracepoint/sched/sched_process_exit")
 int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
-  pid_t pid;
+  pid_t pid, tgid;
   s64 delta;
   struct internal_thread_info *info_p;
   struct profile_block *profile_block_p;
   char comm[TASK_COMM_LEN] = {};
-  u64 current_time_ts, current_block_index;
+  u64 pid_tgid, current_time_ts, current_block_index;
 
   current_time_ts = bpf_ktime_get_ns();
 
   bpf_get_current_comm(&comm, sizeof(comm));
 
-  pid = bpf_get_current_pid_tgid() >> 32;
+  pid_tgid = bpf_get_current_pid_tgid();
+  pid = pid_tgid >> 32;
+  tgid = (u32)pid_tgid;
+
+  if (!allowed_pid_tgid(pid, tgid)) {
+    return 0;
+  }
+
   bpf_printk("exit: pid=%d, comm = %s \n", pid, comm);
 
   info_p = bpf_map_lookup_elem(&thread_map, &pid);

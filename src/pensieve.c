@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <signal.h>
 #include <stdio.h>
@@ -9,23 +10,29 @@
 
 #include "pensieve.h"
 #include "pensieve.skel.h"
+#include "trace_helpers.h"
 
 static struct env {
   bool verbose;
   long min_duration_ms;
+  pid_t pids[MAX_PID_NR];
+  pid_t tids[MAX_TID_NR];
 } env;
 
 const char *argp_program_version = "pensieve 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
 const char argp_program_doc[] =
-    "BPF pensieve demo application.\n"
+    "Perform per thread event profiling.\n"
     "\n"
-    "It traces process start and exits and shows associated \n"
-    "information (filename, process duration, PID and PPID, etc).\n"
-    "\n"
-    "USAGE: ./pensieve [-d <min-duration-ms>] [-v]\n";
+    "USAGE: pensieve [--help] [-p PID] [-t TID]"
+    "EXAMPLES:\n"
+    "    pensieve             # profile all threads until Ctrl-C\n"
+    "    pensieve -p 185,175,165 # only profile threads for PID 185,175,165\n"
+    "    pensieve -t 188,120,134 # only profile threads 188,120,134\n";
 
 static const struct argp_option opts[] = {
+    {"pid", 'p', "PID", 0, "Profile these PIDs only, comma-separated list", 0},
+    {"tid", 't', "TID", 0, "Profile these TIDs only, comma-separated list", 0},
     {"verbose", 'v', NULL, 0, "Verbose debug output"},
     {"duration", 'd', "DURATION-MS", 0,
      "Minimum process duration (ms) to report"},
@@ -33,6 +40,7 @@ static const struct argp_option opts[] = {
 };
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state) {
+  int ret;
   switch (key) {
   case 'v':
     env.verbose = true;
@@ -42,6 +50,32 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
     env.min_duration_ms = strtol(arg, NULL, 10);
     if (errno || env.min_duration_ms <= 0) {
       fprintf(stderr, "Invalid duration: %s\n", arg);
+      argp_usage(state);
+    }
+    break;
+  case 'p':
+    ret = split_convert(strdup(arg), ",", env.pids, sizeof(env.pids),
+                        sizeof(pid_t), str_to_int);
+    if (ret) {
+      if (ret == -ENOBUFS)
+        fprintf(stderr, "the number of pid is too big, please "
+                        "increase MAX_PID_NR's value and recompile\n");
+      else
+        fprintf(stderr, "invalid PID: %s\n", arg);
+
+      argp_usage(state);
+    }
+    break;
+  case 't':
+    ret = split_convert(strdup(arg), ",", env.tids, sizeof(env.tids),
+                        sizeof(pid_t), str_to_int);
+    if (ret) {
+      if (ret == -ENOBUFS)
+        fprintf(stderr, "the number of tid is too big, please "
+                        "increase MAX_TID_NR's value and recompile\n");
+      else
+        fprintf(stderr, "invalid TID: %s\n", arg);
+
       argp_usage(state);
     }
     break;
@@ -106,7 +140,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
 int main(int argc, char **argv) {
   struct ring_buffer *rb = NULL;
   struct pensieve_bpf *skel;
-  int err;
+  int pids_fd, tids_fd, err, i;
+  __u8 val = 0;
 
   /* Parse command line arguments */
   err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -130,11 +165,39 @@ int main(int argc, char **argv) {
   /* Parameterize BPF code with minimum duration parameter */
   skel->rodata->min_duration_ns = env.min_duration_ms * 1000000ULL;
 
+  /* User space PID and TID correspond to TGID and PID in the kernel,
+   * respectively */
+  if (env.pids[0])
+    skel->rodata->filter_by_tgid = true;
+  if (env.tids[0])
+    skel->rodata->filter_by_pid = true;
+
   /* Load & verify BPF programs */
   err = pensieve_bpf__load(skel);
   if (err) {
     fprintf(stderr, "Failed to load and verify BPF skeleton\n");
     goto cleanup;
+  }
+
+  if (env.pids[0]) {
+    /* User pids_fd points to the tgids map in the BPF program */
+    pids_fd = bpf_map__fd(skel->maps.tgids);
+    for (i = 0; i < MAX_PID_NR && env.pids[i]; i++) {
+      if (bpf_map_update_elem(pids_fd, &(env.pids[i]), &val, BPF_ANY) != 0) {
+        fprintf(stderr, "failed to init pids map: %s\n", strerror(errno));
+        goto cleanup;
+      }
+    }
+  }
+  if (env.tids[0]) {
+    /* User tids_fd points to the pids map in the BPF program */
+    tids_fd = bpf_map__fd(skel->maps.pids);
+    for (i = 0; i < MAX_TID_NR && env.tids[i]; i++) {
+      if (bpf_map_update_elem(tids_fd, &(env.tids[i]), &val, BPF_ANY) != 0) {
+        fprintf(stderr, "failed to init tids map: %s\n", strerror(errno));
+        goto cleanup;
+      }
+    }
   }
 
   /* Attach tracepoints */
