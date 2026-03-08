@@ -92,11 +92,13 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
   //          e->ppid, e->filename);
   // }
 
-  printf(
-      "profile_block: (%d), start_time = %llu, offcpu = %d, end_state = %s\n",
-      profile_block_p->pid, profile_block_p->start_time_ns,
-      profile_block_p->offcpu_component,
-      thread_state_name[profile_block_p->end_state]);
+  printf("profile_block: (%d), blk_id = %llu, blk_start = %llu, fst_event = "
+         "%llu, lst_event = %llu, offcpu = %llu, end_state = %s\n",
+         profile_block_p->pid, profile_block_p->block_index,
+         profile_block_p->block_start_time_ns,
+         profile_block_p->first_event_time_ns,
+         profile_block_p->last_event_time_ns, profile_block_p->offcpu_time_ns,
+         thread_state_name[profile_block_p->end_state]);
 
   return 0;
 }

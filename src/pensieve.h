@@ -18,15 +18,21 @@ struct event {
 
 typedef enum thread_state {
   SCHEDULED_OUT = 0,
-  SCHEDUDED_IN = 1,
+  SCHEDULED_IN = 1,
+  THREAD_CREATE = 2,
+  THREAD_EXIT = 3,
 } thread_state_t;
 
-const char *thread_state_name[] = {"SCHEDULED_OUT", "SCHEDUDED_IN"};
+const char *thread_state_name[] = {"SCHEDULED_OUT", "SCHEDULED_IN",
+                                   "THREAD_CREATE", "THREAD_EXIT"};
 
 struct profile_block {
   int pid;
-  unsigned long long start_time_ns;
-  int offcpu_component;
+  unsigned long long block_index;
+  unsigned long long block_start_time_ns;
+  unsigned long long first_event_time_ns;
+  unsigned long long last_event_time_ns;
+  unsigned long long offcpu_time_ns;
   thread_state_t end_state;
 };
 
