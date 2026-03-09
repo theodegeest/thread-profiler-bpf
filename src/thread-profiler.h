@@ -4,20 +4,8 @@
 #define __THREAD_PROFILER_H
 
 #define TASK_COMM_LEN 16
-#define MAX_FILENAME_LEN 127
-
 #define MAX_PID_NR 30
 #define MAX_TID_NR 30
-
-struct event {
-  int pid;
-  int ppid;
-  unsigned exit_code;
-  unsigned long long duration_ns;
-  char comm[TASK_COMM_LEN];
-  char filename[MAX_FILENAME_LEN];
-  bool exit_event;
-};
 
 typedef enum thread_state {
   SCHEDULED_OUT = 0,

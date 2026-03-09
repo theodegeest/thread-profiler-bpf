@@ -13,8 +13,6 @@
 #include "trace_helpers.h"
 
 static struct env {
-  bool verbose;
-  long min_duration_ms;
   unsigned long long granularity_ns;
   pid_t pids[MAX_PID_NR];
   pid_t tids[MAX_TID_NR];
@@ -37,26 +35,12 @@ static const struct argp_option opts[] = {
     {"tid", 't', "TID", 0, "Profile these TIDs only, comma-separated list", 0},
     {"granularity", 'g', "GRANULARITY-NS", 0,
      "Size of granularity for profile blocks in ns"},
-    {"verbose", 'v', NULL, 0, "Verbose debug output"},
-    {"duration", 'd', "DURATION-MS", 0,
-     "Minimum process duration (ms) to report"},
     {},
 };
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state) {
   int ret;
   switch (key) {
-  case 'v':
-    env.verbose = true;
-    break;
-  case 'd':
-    errno = 0;
-    env.min_duration_ms = strtol(arg, NULL, 10);
-    if (errno || env.min_duration_ms <= 0) {
-      fprintf(stderr, "Invalid duration: %s\n", arg);
-      argp_usage(state);
-    }
-    break;
   case 'g':
     errno = 0;
     long number = strtol(arg, NULL, 10);
@@ -130,25 +114,6 @@ static void print_profile_block(struct profile_block *profile_block_p) {
 static int handle_event(void *ctx, void *data, size_t data_sz) {
   struct profile_block *profile_block_p = data;
   print_profile_block(profile_block_p);
-  // struct tm *tm;
-  // char ts[32];
-  // time_t t;
-
-  // time(&t);
-  // tm = localtime(&t);
-  // strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
-  // if (e->exit_event) {
-  //   printf("%-8s %-5s %-16s %-7d %-7d [%u]", ts, "EXIT", e->comm, e->pid,
-  //          e->ppid, e->exit_code);
-  //   if (e->duration_ns)
-  //     printf(" (%llums)", e->duration_ns / 1000000);
-  //   printf("\n");
-  // } else {
-  //   printf("%-8s %-5s %-16s %-7d %-7d %s\n", ts, "EXEC", e->comm, e->pid,
-  //          e->ppid, e->filename);
-  // }
-
   return 0;
 }
 
@@ -184,7 +149,6 @@ int main(int argc, char **argv) {
   }
 
   /* Parameterize BPF code with minimum duration parameter */
-  skel->rodata->min_duration_ns = env.min_duration_ms * 1000000ULL;
   skel->rodata->granularity_ns = env.granularity_ns;
 
   /* User space PID and TID correspond to TGID and PID in the kernel,
