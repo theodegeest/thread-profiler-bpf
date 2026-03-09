@@ -202,6 +202,15 @@ int main(int argc, char **argv) {
   }
 
   // TODO: Look into this
+  // I haven't found a clean way to be able to attach a probe on the conditional
+  // variable. The problem is that libc exports multiple symbols for this
+  // function. So the normal way to define the uprobe in the kernel side does
+  // not work. The only working alternative that I have found is by manually
+  // finding the offsets in the shared library object. As this is not a robust
+  // way to attach a uprobe, I still need to look at alternatives. This way
+  // makes it possible to attach to conditional variables on one machine, but
+  // it does not guarantee that it works on any machine. Or even worse, on the
+  // same machine but after an update.
   // {
   //   /* after loading the bpf object (obj) and finding the program */
   //   struct bpf_program *prog =
