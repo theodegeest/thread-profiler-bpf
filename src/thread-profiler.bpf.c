@@ -265,7 +265,7 @@ int trace_fork(struct trace_event_raw_sched_process_fork *ctx) {
     return 0;
   }
 
-  bpf_printk("fork parent=%d child=%d\n", ctx->parent_pid, ctx->child_pid);
+  // bpf_printk("fork parent=%d child=%d\n", ctx->parent_pid, ctx->child_pid);
 
   info_p = bpf_map_lookup_elem(&thread_map, &pid);
   if (info_p) {
@@ -305,7 +305,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
     return 0;
   }
 
-  bpf_printk("exit: pid=%d, comm = %s \n", pid, comm);
+  // bpf_printk("exit: pid=%d, comm = %s \n", pid, comm);
 
   info_p = bpf_map_lookup_elem(&thread_map, &pid);
   if (!info_p) {
@@ -355,7 +355,7 @@ int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
   if (!allowed_pid_tgid(pid, tgid))
     return 0;
 
-  bpf_printk("UPROBE: pthread_mutex_lock tgid=%u pid=%u\n", tgid, pid);
+  // bpf_printk("UPROBE: pthread_mutex_lock tgid=%u pid=%u\n", tgid, pid);
   return 0;
 }
 
@@ -372,3 +372,45 @@ int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
 //   bpf_printk("UPROBE: pthread_mutex_unlock tgid=%u pid=%u\n", tgid, pid);
 //   return 0;
 // }
+
+// Userspace barrier wait call
+SEC("uprobe/libc.so.6:pthread_barrier_wait")
+int BPF_PROG(uprobe_pthread_barrier_wait, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = (u32)id;   // thread id (tid)
+  u32 tgid = id >> 32; // process id (tgid)
+
+  if (!allowed_pid_tgid(pid, tgid))
+    return 0;
+
+  bpf_printk("UPROBE: pthread_barrier_wait tgid=%u pid=%u\n", tgid, pid);
+  return 0;
+}
+
+// Userspace conditional variable wait call
+SEC("uprobe")
+int BPF_PROG(uprobe_pthread_cond_wait, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = (u32)id;   // thread id (tid)
+  u32 tgid = id >> 32; // process id (tgid)
+
+  if (!allowed_pid_tgid(pid, tgid))
+    return 0;
+
+  bpf_printk("UPROBE: pthread_cond_wait tgid=%u pid=%u\n", tgid, pid);
+  return 0;
+}
+
+// Userspace semaphore wait call
+SEC("uprobe/libc.so.6:sem_wait")
+int BPF_PROG(uprobe_sem_wait, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 pid = (u32)id;   // thread id (tid)
+  u32 tgid = id >> 32; // process id (tgid)
+
+  if (!allowed_pid_tgid(pid, tgid))
+    return 0;
+
+  bpf_printk("UPROBE: sem_wait tgid=%u pid=%u\n", tgid, pid);
+  return 0;
+}

@@ -186,13 +186,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* Attach tracepoints */
-  err = thread_profiler_bpf__attach(skel);
-  if (err) {
-    fprintf(stderr, "Failed to attach BPF skeleton\n");
-    goto cleanup;
-  }
-
   /* Set up ring buffer polling */
   rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
   if (!rb) {
@@ -200,6 +193,47 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Failed to create ring buffer\n");
     goto cleanup;
   }
+
+  /* Attach tracepoints */
+  err = thread_profiler_bpf__attach(skel);
+  if (err) {
+    fprintf(stderr, "Failed to attach BPF skeleton\n");
+    goto cleanup;
+  }
+
+  // TODO: Look into this
+  // {
+  //   /* after loading the bpf object (obj) and finding the program */
+  //   struct bpf_program *prog =
+  //       bpf_object__find_program_by_name(skel->obj,
+  //       "uprobe_pthread_cond_wait");
+  //   if (!prog) /* handle error */
+  //     ;
+
+  //   LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
+  //   // uprobe_opts.func_name =
+  //   //     "pthread_cond_wait";      // ask libbpf to resolve the symbol name
+  //   uprobe_opts.retprobe = false; // false = entry, true = return
+
+  //   // To get offsets use this command
+  //   // No clue if this will be needed
+  //   // nm -D /lib/x86_64-linux-gnu/libc.so.6 | grep pthread_cond_wait
+  //   // 000000000009b5e0 T pthread_cond_wait@@GLIBC_2.3.2
+  //   // 0000000000099c80 T pthread_cond_wait@GLIBC_2.2.5
+  //   //
+  //   struct bpf_link *link = bpf_program__attach_uprobe_opts(
+  //       prog, -1 /* all pids */, "/lib/x86_64-linux-gnu/libc.so.6",
+  //       0x09b5e0 /* offset ignored when func_name used */, &uprobe_opts);
+
+  //   // struct bpf_link *link = bpf_program__attach_uprobe_opts(
+  //   //     prog, -1 /* all pids */, "/lib/x86_64-linux-gnu/libc.so.6",
+  //   //     0x099c80 /* offset ignored when func_name used */, &uprobe_opts);
+  //   if (!link) {
+  //     fprintf(stderr, "attach UPROBE pthread_cond_wait failed: %s\n",
+  //             strerror(errno));
+  //     goto cleanup;
+  //   }
+  // }
 
   /* Process events */
   printf("%s %s %s %s %s %s %s\n", "TID", "BLOCK_INDEX", "BLOCK_START_TIME",
