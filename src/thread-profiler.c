@@ -15,9 +15,10 @@
 static struct env {
   bool verbose;
   long min_duration_ms;
+  unsigned long long granularity_ns;
   pid_t pids[MAX_PID_NR];
   pid_t tids[MAX_TID_NR];
-} env;
+} env = {.granularity_ns = 1e8};
 
 const char *argp_program_version = "thread_profiler 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -34,6 +35,8 @@ const char argp_program_doc[] =
 static const struct argp_option opts[] = {
     {"pid", 'p', "PID", 0, "Profile these PIDs only, comma-separated list", 0},
     {"tid", 't', "TID", 0, "Profile these TIDs only, comma-separated list", 0},
+    {"granularity", 'g', "GRANULARITY-NS", 0,
+     "Size of granularity for profile blocks in ns"},
     {"verbose", 'v', NULL, 0, "Verbose debug output"},
     {"duration", 'd', "DURATION-MS", 0,
      "Minimum process duration (ms) to report"},
@@ -52,6 +55,16 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
     if (errno || env.min_duration_ms <= 0) {
       fprintf(stderr, "Invalid duration: %s\n", arg);
       argp_usage(state);
+    }
+    break;
+  case 'g':
+    errno = 0;
+    long number = strtol(arg, NULL, 10);
+    if (errno || number <= 0) {
+      fprintf(stderr, "Invalid duration: %s\n", arg);
+      argp_usage(state);
+    } else {
+      env.granularity_ns = (unsigned long long)number;
     }
     break;
   case 'p':
@@ -172,6 +185,7 @@ int main(int argc, char **argv) {
 
   /* Parameterize BPF code with minimum duration parameter */
   skel->rodata->min_duration_ns = env.min_duration_ms * 1000000ULL;
+  skel->rodata->granularity_ns = env.granularity_ns;
 
   /* User space PID and TID correspond to TGID and PID in the kernel,
    * respectively */
