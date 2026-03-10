@@ -387,6 +387,10 @@ cleanup:
 // this can be a single function or that it needs to be split up in two.
 // One way to do this is with a single function and if it is SCHEDULED_IN we
 // don't do anything with the previous delta.
+//
+// I see two ways maybe a switch case or maybe like the trick with the index
+// because we can use enums that are numbers to reference in an array so that
+// might also be a way to get the offset in the struct
 
 static int enter_event(pid_t pid, thread_state_t new_block_state,
                        thread_state_t new_state) {
