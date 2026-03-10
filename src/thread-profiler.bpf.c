@@ -382,12 +382,8 @@ int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
     }
   }
 
-  // bpf_printk("handle_sched_switch: prev thread info (%d)\n", pid);
-
   current_block_index =
       get_block_index(current_time, info_p->thread_creation_ts);
-  // bpf_printk("handle_sched_switch: current_block_index (%lld)\n",
-  //            current_block_index);
 
   if (current_block_index > info_p->block_index) {
     // The last event was in a previous block
@@ -433,10 +429,6 @@ int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
       return 0;
     }
   }
-
-  // bpf_printk(
-  //     "handle_sched_switch [%d] pid (%d, %d) was scheduled out for %lld
-  //     ns\n", bpf_get_smp_processor_id(), pid, tgid, delta);
 
   current_block_index =
       get_block_index(current_time, info_p->thread_creation_ts);
