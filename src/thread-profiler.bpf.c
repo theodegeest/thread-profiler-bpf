@@ -21,6 +21,13 @@ struct {
 } thread_map SEC(".maps");
 
 struct {
+  __uint(type, BPF_MAP_TYPE_HASH);
+  __uint(max_entries, 8192);
+  __type(key, u64);
+  __type(value, pid_t);
+} disk_io_pid_map SEC(".maps");
+
+struct {
   __uint(type, BPF_MAP_TYPE_RINGBUF);
   __uint(max_entries, 256 * 1024);
 } rb SEC(".maps");
@@ -64,6 +71,7 @@ static int create_new_thread_info(struct internal_thread_info *info_p,
   info_p->last_event_ts = current_time;
   info_p->offcpu_time_ns = 0;
   info_p->mutex_wait_time_ns = 0;
+  info_p->disk_io_time_ns = 0;
   info_p->state = initial_state;
 
   return bpf_map_update_elem(&thread_map, &pid, info_p, BPF_ANY);
@@ -85,6 +93,7 @@ static int submit_current_block(pid_t pid,
   profile_block_p->last_event_time_ns = info_p->last_event_ts;
   profile_block_p->offcpu_time_ns = info_p->offcpu_time_ns;
   profile_block_p->mutex_wait_time_ns = info_p->mutex_wait_time_ns;
+  profile_block_p->disk_io_time_ns = info_p->disk_io_time_ns;
   profile_block_p->end_state = info_p->state;
 
   /* send data to user-space for post-processing */
@@ -101,6 +110,7 @@ static int bump_block(struct internal_thread_info *info_p,
   info_p->last_event_ts = current_time_ts;
   info_p->offcpu_time_ns = 0;
   info_p->mutex_wait_time_ns = 0;
+  info_p->disk_io_time_ns = 0;
   return 0;
 }
 
@@ -145,6 +155,8 @@ static int handle_sched_switch(void *ctx, bool preempt,
       // intermittently be scheduled in and out during the futex wait. The lock
       // is still not acquired. Do not count this as a scheduling out, it is
       // still a mutex wait.
+      goto skip_prev;
+    } else if (info_p->state == DISK_IO) {
       goto skip_prev;
     }
 
@@ -195,6 +207,8 @@ skip_prev:
     // It is only temporarily scheduled in and will probably be scheduled out
     // again inside the same lock. Do not count this as any scheduling out, the
     // lock is still not acquired.
+    goto cleanup;
+  } else if (info_p->state == DISK_IO) {
     goto cleanup;
   }
 
@@ -350,15 +364,8 @@ cleanup:
   return 0;
 }
 
-// Userspace mutex lock call
-SEC("uprobe/libc.so.6:__pthread_mutex_lock")
-int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
-  u64 id = bpf_get_current_pid_tgid();
-  u32 tgid = id >> 32;
-  if (!allowed_tgid(tgid))
-    return 0;
-
-  u32 pid = (u32)id;
+static int enter_event(pid_t pid, thread_state_t new_block_state,
+                       thread_state_t new_state) {
   struct internal_thread_info *info_p, info = {};
 
   u64 current_time, current_block_index;
@@ -371,7 +378,7 @@ int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
   if (!info_p) {
     // There was no thread info, create new
     bpf_printk("uprobe pthread_mutex_lock: no prev thread info (%d)\n", pid);
-    create_new_thread_info(&info, pid, SCHEDULED_IN, current_time);
+    create_new_thread_info(&info, pid, new_block_state, current_time);
 
     info_p = bpf_map_lookup_elem(&thread_map, &pid);
     if (!info_p) {
@@ -393,27 +400,25 @@ int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
   }
 
   info_p->last_event_ts = current_time;
-  info_p->state = MUTEX_WAIT;
-
+  info_p->state = new_state;
   return 0;
 }
 
-// Userspace mutex lock return
-SEC("uretprobe/libc.so.6:__pthread_mutex_lock")
-int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
-  u64 id = bpf_get_current_pid_tgid();
-  u32 tgid = id >> 32;
-  if (!allowed_tgid(tgid))
-    return 0;
-
-  u32 pid = (u32)id;
+static int exit_event(pid_t pid, size_t field_offset,
+                      thread_state_t new_block_state,
+                      thread_state_t new_state) {
   struct internal_thread_info *info_p, info = {};
 
   s64 delta;
 
   u64 current_time, current_block_index;
 
+  u64 *field_ptr;
+
   current_time = bpf_ktime_get_ns();
+
+  // unsigned long long *offset =
+  //     &(((struct internal_thread_info *)NULL)->mutex_wait_time_ns);
 
   // bpf_printk("URETPROBE: pthread_mutex_lock tgid=%u pid=%u\n", tgid, pid);
   info_p = bpf_map_lookup_elem(&thread_map, &pid);
@@ -422,10 +427,7 @@ int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
     create_new_thread_info(&info, pid, MUTEX_WAIT, current_time);
     info_p = bpf_map_lookup_elem(&thread_map, &pid);
     if (!info_p) {
-      bpf_printk(
-          "uretprobe pthread_mutex_lock: Could not create thread info for "
-          "next (%d)\n",
-          pid);
+      bpf_printk("exit_event: Could not create thread info for (%d)\n", pid);
       return 0;
     }
   }
@@ -439,17 +441,20 @@ int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
     delta =
         (s64)(info_p->block_start_ts + granularity_ns - info_p->last_event_ts);
     if (delta < 0) {
-      bpf_printk("uretprobe: delta previous block negative (%d)\n", pid);
+      bpf_printk("exit_event: delta previous block negative (%d)\n", pid);
       goto cleanup;
     }
 
     if (delta > granularity_ns) {
-      bpf_printk("uretprobe pthread_mutex_lock: WARNING (%d) delta of previous "
+      bpf_printk("exit_event: WARNING (%d) delta of previous "
                  "block is higher than granularity_ns\n",
                  pid);
     }
 
-    info_p->mutex_wait_time_ns += delta;
+    // info_p->mutex_wait_time_ns += delta;
+    // *((char *)info_p + (int)offset) += delta;
+    field_ptr = (u64 *)((char *)info_p + field_offset);
+    *field_ptr += delta;
     info_p->last_event_ts = info_p->block_start_ts + granularity_ns;
     info_p->state = MUTEX_WAIT;
     submit_current_block(pid, info_p);
@@ -458,25 +463,52 @@ int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
 
   delta = (s64)(current_time - info_p->last_event_ts);
   if (delta < 0) {
-    bpf_printk(
-        "uretprobe pthread_mutex_lock: delta current block negative (%d)\n",
-        pid);
+    bpf_printk("exit_event: delta current block negative (%d)\n", pid);
     goto cleanup;
   }
 
   if (delta > granularity_ns) {
-    bpf_printk(
-        "uretprobe pthread_mutex_lock: WARNING (%d) delta of current block is "
-        "higher than granularity_ns\n",
-        pid);
+    bpf_printk("exit_event: WARNING (%d) delta of current block is "
+               "higher than granularity_ns\n",
+               pid);
   }
 
   info_p->last_event_ts = current_time;
-  info_p->mutex_wait_time_ns += delta;
+
+  field_ptr = (u64 *)((char *)info_p + field_offset);
+  *field_ptr += delta;
+  // info_p->mutex_wait_time_ns += delta;
   info_p->state = SCHEDULED_IN;
 
 cleanup:
   return 0;
+}
+
+// Userspace mutex lock call
+SEC("uprobe/libc.so.6:__pthread_mutex_lock")
+int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u32 pid = (u32)id;
+
+  return enter_event(pid, SCHEDULED_IN, MUTEX_WAIT);
+}
+
+// Userspace mutex lock return
+SEC("uretprobe/libc.so.6:__pthread_mutex_lock")
+int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u32 pid = (u32)id;
+
+  size_t offset = offsetof(struct internal_thread_info, mutex_wait_time_ns);
+  return exit_event(pid, offset, MUTEX_WAIT, SCHEDULED_IN);
 }
 
 // Userspace barrier wait call
@@ -545,5 +577,78 @@ int BPF_PROG(uretprobe_sem_wait, void *unused) {
   u32 pid = (u32)id;
 
   bpf_printk("URETPROBE: sem_wait tgid=%u pid=%u\n", tgid, pid);
+  return 0;
+}
+
+// This is only the read system call
+// SEC("tracepoint/syscalls/sys_enter_read")
+// int trace_read_enter(struct trace_event_raw_sys_enter *ctx) {
+//   u64 id = bpf_get_current_pid_tgid();
+//   u32 tgid = id >> 32;
+//   if (!allowed_tgid(tgid))
+//     return 0;
+
+//   u32 pid = (u32)id;
+
+//   bpf_printk("tracepoint: sys_enter_read tgid=%u pid=%u\n", tgid, pid);
+//   return 0;
+// }
+// SEC("tracepoint/syscalls/sys_exit_read")
+// int trace_read_exit(struct trace_event_raw_sys_exit *ctx) {
+//   u64 id = bpf_get_current_pid_tgid();
+//   u32 tgid = id >> 32;
+//   if (!allowed_tgid(tgid))
+//     return 0;
+
+//   u32 pid = (u32)id;
+
+//   bpf_printk("tracepoint: sys_exit_read tgid=%u pid=%u\n", tgid, pid);
+//   return 0;
+// }
+
+SEC("tracepoint/block/block_rq_issue")
+int trace_block_rq_issue(struct trace_event_raw_block_rq *ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u32 pid = (u32)id;
+
+  // The key is a composition, it is not that strong but it should be fine
+  u64 key = ((u64)ctx->dev << 32) | ctx->sector;
+  bpf_map_update_elem(&disk_io_pid_map, &key, &id, BPF_ANY);
+
+  bpf_printk("TRACEPOINT: block_rq_issue tgid=%u pid=%u, dev=%u, sector=%ull\n",
+             tgid, pid, ctx->dev, ctx->sector);
+  return enter_event(pid, SCHEDULED_IN, DISK_IO);
+}
+
+// For the IO completion we need to do a workaround. The problem is that the
+// process that completes the IO instructions is not necessarily the same as
+// one that issued it. This means that we need to keep track of device and
+// sector instruction data so that we can find again which process issued the
+// IO instructions.
+// TODO: For IO the problem is that IO can also be done asynchronously. I
+// think one approach is to actually look if the scheduler is scheduling out the
+// thread while IO is happening. That would be a strong indication that it
+// is synchronous IO and not asynchronous. To be thought about in the future.
+SEC("tracepoint/block/block_rq_complete")
+int trace_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx) {
+
+  u64 key = ((u64)ctx->dev << 32) | ctx->sector;
+  u32 *pid_p = bpf_map_lookup_elem(&disk_io_pid_map, &key);
+
+  // The pid was not in the map, so it was not allowed
+  if (!pid_p)
+    return 0;
+
+  u32 pid = *pid_p;
+
+  bpf_printk("TRACEPOINT: block_rq_complete pid=%u, dev=%u, sector=%ull\n", pid,
+             ctx->dev, ctx->sector);
+  size_t offset = offsetof(struct internal_thread_info, disk_io_time_ns);
+  exit_event(pid, offset, DISK_IO, SCHEDULED_IN);
+  bpf_map_delete_elem(&disk_io_pid_map, &key);
   return 0;
 }

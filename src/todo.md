@@ -8,11 +8,9 @@
  `TASK_STOPPED`          stopped by signal
  `TASK_DEAD`             exiting
 
-- IO
-  sys_enter_read (userspace read)
-  block_rq_issue (start an io)
-  block_rq_complete (io is complete?)
-  sched_switch (maybe schedule back? before or after complete?)
+- IO: Currently the thread profiler is assuming that any IO operation is done synchronously.
+      It might be needed to use the scheduler information to reduce the actual IO time to the off-CPU time during the IO call.
+      This makes it possible to distinguish between asynchronous IO and synchronous IO.
 
 - yield?
   tracepoint/syscalls/sys_enter_sched_yield
@@ -23,4 +21,6 @@
 - add synchronisation metric (contention?)
 - add syscall metric
 - add memory metric (LLC?)
-- Make user side request latest data when closing (to reduce information loss on last profile block)
+- add barrier metric
+- add semaphore metric
+- add conditional variable metric (WARN multiple exported symbols in libc)
