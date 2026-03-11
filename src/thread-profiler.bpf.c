@@ -38,12 +38,6 @@ static bool allowed_tgid(pid_t tgid) {
   return true;
 }
 
-static bool allowed_task(struct task_struct *task) {
-  u32 tgid = BPF_CORE_READ(task, tgid);
-
-  return allowed_tgid(tgid);
-}
-
 // static void print_state_stack(struct internal_thread_info *info_p) {
 //   bpf_printk("depth=%d [%s,%s,%s,%s,%s]", info_p->state_depth,
 //              thread_state_name[info_p->state_stack[0]],
@@ -61,14 +55,14 @@ static u64 get_block_index(u64 current_time, u64 start_time) {
   return (current_time - start_time) / granularity_ns;
 }
 
-static s64 get_start_of_block(u64 current_time, u64 start_time) {
-  if (current_time < start_time) {
-    bpf_printk("start_of_block [%d] current is before start time\n");
-    return -1;
-  }
-  s64 n = (current_time - start_time) / granularity_ns;
-  return start_time + n * granularity_ns;
-}
+// static s64 get_start_of_block(u64 current_time, u64 start_time) {
+//   if (current_time < start_time) {
+//     bpf_printk("start_of_block [%d] current is before start time\n");
+//     return -1;
+//   }
+//   s64 n = (current_time - start_time) / granularity_ns;
+//   return start_time + n * granularity_ns;
+// }
 
 static u64 get_start_of_nth_block(u64 start_time, u64 n) {
   return start_time + n * granularity_ns;
@@ -209,7 +203,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
   current_time = bpf_ktime_get_ns();
 
   // The scheduled out thread was not the idle thread
-  if (pid && allowed_task(prev)) {
+  if (pid && allowed_tgid(tgid)) {
     info_p = bpf_map_lookup_elem(&thread_map, &pid);
     if (!info_p) {
       // There was no thread info, create new
@@ -279,13 +273,13 @@ skip_prev:
   tgid = BPF_CORE_READ(next, tgid);
 
   // The newly scheduled thread is the idle thread
-  if (!pid || !allowed_task(next))
+  if (!pid || !allowed_tgid(tgid))
     return 0;
 
   info_p = bpf_map_lookup_elem(&thread_map, &pid);
   if (!info_p) {
     // This thread was not yet encountered
-    create_new_thread_info(&info, pid, SCHEDULED_OUT, current_time);
+    create_new_thread_info(&info, pid, THREAD_CREATE, current_time);
     info_p = bpf_map_lookup_elem(&thread_map, &pid);
     if (!info_p) {
       bpf_printk(
