@@ -205,9 +205,9 @@ static int handle_sched_switch(void *ctx, bool preempt,
     state = state_stack_peek(info_p);
     if (state == MUTEX || state == FUTEX || state == DISK_IO) {
       // The top of the state stack is an event where we ignore schedule out
-      thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state : ERROR_STATE;
-      bpf_printk("handle_sched_switch: prev skip (%d) %s", pid,
-                 thread_state_name[s]);
+      // thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state :
+      // ERROR_STATE; bpf_printk("handle_sched_switch: prev skip (%d) %s", pid,
+      //            thread_state_name[s]);
       goto skip_prev;
     }
 
@@ -275,9 +275,9 @@ skip_prev:
   state = state_stack_peek(info_p);
   if (state == MUTEX || state == FUTEX || state == DISK_IO) {
     // The top of the state stack is an event where we ignore schedule in
-    thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state : ERROR_STATE;
-    bpf_printk("handle_sched_switch: next skip (%d) %s", pid,
-               thread_state_name[s]);
+    // thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state : ERROR_STATE;
+    // bpf_printk("handle_sched_switch: next skip (%d) %s", pid,
+    //            thread_state_name[s]);
     goto cleanup;
   }
 
@@ -404,6 +404,60 @@ cleanup:
   return 0;
 }
 
+static void submit_previous_blocks(struct internal_thread_info *info_p,
+                                   pid_t pid, thread_state_t state,
+                                   u64 current_block_index) {
+  s64 delta;
+  u64 block_end = info_p->block_start_ts + granularity_ns;
+  delta = block_end - info_p->last_event_ts;
+  switch (state) {
+  case SCHEDULED_OUT:
+    info_p->offcpu_time_ns += delta;
+    break;
+  case MUTEX:
+    info_p->mutex_time_ns += delta;
+    break;
+  case FUTEX:
+    info_p->futex_time_ns += delta;
+    break;
+  case DISK_IO:
+    info_p->disk_io_time_ns += delta;
+    break;
+  default:
+    break;
+  }
+  info_p->last_event_ts = block_end;
+  submit_current_block(pid, info_p);
+  make_next_block(info_p);
+  if (current_block_index > info_p->block_index) {
+    // There was at least one granularity_ns in between, submit a block of
+    // that size
+
+    block_end =
+        start_of_nth_block(info_p->thread_creation_ts, current_block_index);
+    delta = block_end - info_p->block_start_ts;
+    switch (state) {
+    case SCHEDULED_OUT:
+      info_p->offcpu_time_ns += delta;
+      break;
+    case MUTEX:
+      info_p->mutex_time_ns += delta;
+      break;
+    case FUTEX:
+      info_p->futex_time_ns += delta;
+      break;
+    case DISK_IO:
+      info_p->disk_io_time_ns += delta;
+      break;
+    default:
+      break;
+    }
+    info_p->last_event_ts = block_end;
+    submit_current_block(pid, info_p);
+    bump_block(info_p, current_block_index);
+  }
+}
+
 SEC("tp_btf/sched_switch")
 int BPF_PROG(sched_switch, bool preempt, struct task_struct *prev,
              struct task_struct *next) {
@@ -482,55 +536,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
     // The last event was in a previous block
     // We need to submit this block to the user space
 
-    u64 block_end = info_p->block_start_ts + granularity_ns;
-    delta = block_end - info_p->last_event_ts;
-    switch (state) {
-    case SCHEDULED_OUT:
-      info_p->offcpu_time_ns += delta;
-      break;
-    case MUTEX:
-      info_p->mutex_time_ns += delta;
-      break;
-    case FUTEX:
-      info_p->futex_time_ns += delta;
-      break;
-    case DISK_IO:
-      info_p->disk_io_time_ns += delta;
-      break;
-    default:
-      break;
-    }
-    info_p->last_event_ts = block_end;
-    submit_current_block(pid, info_p);
-    make_next_block(info_p);
-    if (current_block_index > info_p->block_index) {
-      // There was at least one granularity_ns in between, submit a block of
-      // that size
-
-      block_end =
-          start_of_nth_block(info_p->thread_creation_ts, current_block_index);
-      delta = block_end - info_p->block_start_ts;
-      switch (state) {
-      case SCHEDULED_OUT:
-        info_p->offcpu_time_ns += delta;
-        break;
-      case MUTEX:
-        info_p->mutex_time_ns += delta;
-        break;
-      case FUTEX:
-        info_p->futex_time_ns += delta;
-        break;
-      case DISK_IO:
-        info_p->disk_io_time_ns += delta;
-        break;
-      default:
-        break;
-      }
-      info_p->last_event_ts = block_end;
-      submit_current_block(pid, info_p);
-      bump_block(info_p, current_block_index);
-    }
-
+    submit_previous_blocks(info_p, pid, state, current_block_index);
     // submit_current_block(pid, info_p);
     // bump_block(info_p, current_block_index, current_time_ts);
   }
@@ -626,57 +632,7 @@ static int enter_event(pid_t pid, thread_state_t new_block_state,
     // The last event was in a previous block
     // We need to submit this block to the user space
 
-    u64 block_end = info_p->block_start_ts + granularity_ns;
-    delta = block_end - info_p->last_event_ts;
-    switch (state) {
-    case SCHEDULED_OUT:
-      info_p->offcpu_time_ns += delta;
-      break;
-    case MUTEX:
-      info_p->mutex_time_ns += delta;
-      break;
-    case FUTEX:
-      info_p->futex_time_ns += delta;
-      break;
-    case DISK_IO:
-      info_p->disk_io_time_ns += delta;
-      break;
-    default:
-      break;
-    }
-    info_p->last_event_ts = block_end;
-    submit_current_block(pid, info_p);
-    make_next_block(info_p);
-    if (current_block_index > info_p->block_index) {
-      // There was at least one granularity_ns in between, submit a block of
-      // that size
-
-      block_end =
-          start_of_nth_block(info_p->thread_creation_ts, current_block_index);
-      delta = block_end - info_p->block_start_ts;
-      switch (state) {
-      case SCHEDULED_OUT:
-        info_p->offcpu_time_ns += delta;
-        break;
-      case MUTEX:
-        info_p->mutex_time_ns += delta;
-        break;
-      case FUTEX:
-        info_p->futex_time_ns += delta;
-        break;
-      case DISK_IO:
-        info_p->disk_io_time_ns += delta;
-        break;
-      default:
-        break;
-      }
-      info_p->last_event_ts = block_end;
-      submit_current_block(pid, info_p);
-      bump_block(info_p, current_block_index);
-    }
-
-    // submit_current_block(pid, info_p);
-    // bump_block(info_p, current_block_index, current_time);
+    submit_previous_blocks(info_p, pid, state, current_block_index);
   }
 
   delta = current_time - info_p->last_event_ts;
@@ -698,24 +654,38 @@ static int enter_event(pid_t pid, thread_state_t new_block_state,
   }
 
   info_p->last_event_ts = current_time;
-  // info_p->state = new_state;
-  switch (state) {
-  case SCHEDULED_OUT:
+  switch (new_state) {
   case MUTEX:
+    switch (state) {
+    case SCHEDULED_OUT:
+    case MUTEX:
+    case FUTEX:
+    case DISK_IO:
+      state_stack_pop(info_p);
+      break;
+    default:
+      break;
+    }
+    break;
   case FUTEX:
-  case DISK_IO:
-    state_stack_pop(info_p);
+    switch (state) {
+    case SCHEDULED_OUT:
+    case FUTEX:
+    case DISK_IO:
+      state_stack_pop(info_p);
+      break;
+    default:
+      break;
+    }
     break;
   default:
     break;
   }
-  state_stack_push(info_p, MUTEX);
+  state_stack_push(info_p, new_state);
   return 0;
 }
 
-static int exit_event(pid_t pid, size_t field_offset,
-                      thread_state_t new_block_state,
-                      thread_state_t new_state) {
+static int exit_event(pid_t pid, thread_state_t calling_state) {
   struct internal_thread_info *info_p, info = {};
 
   s64 delta;
@@ -745,75 +715,7 @@ static int exit_event(pid_t pid, size_t field_offset,
     // The last event was in a previous block
     // We need to submit this block to the user space
 
-    u64 block_end = info_p->block_start_ts + granularity_ns;
-    delta = block_end - info_p->last_event_ts;
-    switch (state) {
-    case SCHEDULED_OUT:
-      info_p->offcpu_time_ns += delta;
-      break;
-    case MUTEX:
-      info_p->mutex_time_ns += delta;
-      break;
-    case FUTEX:
-      info_p->futex_time_ns += delta;
-      break;
-    case DISK_IO:
-      info_p->disk_io_time_ns += delta;
-      break;
-    default:
-      break;
-    }
-    info_p->last_event_ts = block_end;
-    submit_current_block(pid, info_p);
-    make_next_block(info_p);
-    if (current_block_index > info_p->block_index) {
-      // There was at least one granularity_ns in between, submit a block of
-      // that size
-
-      block_end =
-          start_of_nth_block(info_p->thread_creation_ts, current_block_index);
-      delta = block_end - info_p->block_start_ts;
-      switch (state) {
-      case SCHEDULED_OUT:
-        info_p->offcpu_time_ns += delta;
-        break;
-      case MUTEX:
-        info_p->mutex_time_ns += delta;
-        break;
-      case FUTEX:
-        info_p->futex_time_ns += delta;
-        break;
-      case DISK_IO:
-        info_p->disk_io_time_ns += delta;
-        break;
-      default:
-        break;
-      }
-      info_p->last_event_ts = block_end;
-      submit_current_block(pid, info_p);
-      bump_block(info_p, current_block_index);
-    }
-
-    // delta =
-    //     (s64)(info_p->block_start_ts + granularity_ns -
-    //     info_p->last_event_ts);
-    // if (delta < 0) {
-    //   bpf_printk("exit_event: delta previous block negative (%d)\n", pid);
-    //   goto cleanup;
-    // }
-
-    // if (delta > granularity_ns) {
-    //   bpf_printk("exit_event: WARNING (%d) delta of previous "
-    //              "block is higher than granularity_ns\n",
-    //              pid);
-    // }
-
-    // field_ptr = (u64 *)((char *)info_p + field_offset);
-    // *field_ptr += delta;
-    // info_p->last_event_ts = info_p->block_start_ts + granularity_ns;
-    // info_p->state = new_block_state;
-    // submit_current_block(pid, info_p);
-    // bump_block(info_p, current_block_index, current_time);
+    submit_previous_blocks(info_p, pid, state, current_block_index);
   }
 
   delta = current_time - info_p->last_event_ts;
@@ -853,12 +755,29 @@ static int exit_event(pid_t pid, size_t field_offset,
 
   // info_p->state = new_state;
 
-  switch (state) {
-  case SCHEDULED_OUT: // This one would be weird
+  switch (calling_state) {
   case MUTEX:
-  case FUTEX:   // I would expect it to already be gone
-  case DISK_IO: // Maybe the IO uses locks? TODO: maybe look into this
-    state_stack_pop(info_p);
+    switch (state) {
+    case SCHEDULED_OUT: // This one would be weird
+    case MUTEX:
+    case FUTEX:   // I would expect it to already be gone
+    case DISK_IO: // Maybe the IO uses locks? TODO: maybe look into this
+      state_stack_pop(info_p);
+      break;
+    default:
+      break;
+    }
+    break;
+  case FUTEX:
+    switch (state) {
+    case SCHEDULED_OUT: // This one would be weird
+    case FUTEX:         // I would expect it to already be gone
+    case DISK_IO:       // Maybe the IO uses locks? TODO: maybe look into this
+      state_stack_pop(info_p);
+      break;
+    default:
+      break;
+    }
     break;
   default:
     break;
@@ -891,78 +810,35 @@ int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
 
   u32 pid = (u32)id;
 
-  size_t offset = offsetof(struct internal_thread_info, mutex_time_ns);
-  return exit_event(pid, offset, MUTEX, SCHEDULED_IN);
+  // size_t offset = offsetof(struct internal_thread_info, mutex_time_ns);
+  return exit_event(pid, MUTEX);
 }
 
-// This is only the read system call
-// SEC("tracepoint/syscalls/sys_enter_futex")
-// int trace_enter_futex(struct trace_event_raw_sys_enter *ctx) {
-//   u64 id = bpf_get_current_pid_tgid();
-//   u32 tgid = id >> 32;
-//   if (!allowed_tgid(tgid))
-//     return 0;
+SEC("tracepoint/syscalls/sys_enter_futex")
+int trace_enter_futex(struct trace_event_raw_sys_enter *ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
 
-//   u32 pid = (u32)id;
+  u32 pid = (u32)id;
 
-//   // TODO: use this
-//   switch (state) {
-//   case ERROR_STATE:
-//     bpf_printk("handle_sched_switch: prev previous block ERROR_STATE");
-//     break;
-//   case SCHEDULED_OUT:
-//     bpf_printk("handle_sched_switch: prev previous block SCHEDULED_OUT");
-//     break;
-//   case MUTEX_WAIT:
-//     bpf_printk("handle_sched_switch: prev previous block MUTEX_WAIT");
-//     u64 block_end = info_p->block_start_ts + granularity_ns;
-//     info_p->mutex_time_ns += block_end - info_p->last_event_ts;
-//     info_p->last_event_ts = block_end;
-//     submit_current_block(pid, info_p);
+  // bpf_printk("tracepoint: sys_enter_futex tgid=%u pid=%u\n", tgid, pid);
+  return enter_event(pid, SCHEDULED_IN, FUTEX);
+}
 
-//     if (current_block_index > info_p->block_index + 1) {
-//       // The current event happend more than one granularity_ns from the
-//       // last event
+SEC("tracepoint/syscalls/sys_exit_futex")
+int trace_exit_futex(struct trace_event_raw_sys_exit *ctx) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
 
-//       info_p->block_index += 1;
-//       info_p->block_start_ts = block_end;
-//       info_p->last_event_ts =
-//           start_of_block(current_time, info_p->thread_creation_ts);
-//       info_p->offcpu_time_ns = 0;
-//       info_p->mutex_time_ns = info_p->last_event_ts - info_p->block_start_ts;
-//       info_p->futex_time_ns = 0;
-//       info_p->disk_io_time_ns = 0;
-//       submit_current_block(pid, info_p);
+  u32 pid = (u32)id;
 
-//       bump_block(info_p, current_block_index, current_time);
-//       info_p->mutex_time_ns += current_time - info_p->block_start_ts;
-//       state_stack_push(info_p, SCHEDULED_OUT);
-//     }
-//     break;
-//   default:
-//     bpf_printk("handle_sched_switch: prev previous block %s",
-//                thread_state_name[state]);
-
-//     state_stack_push(info_p, SCHEDULED_OUT);
-//     break;
-//   }
-
-//   bpf_printk("tracepoint: sys_enter_futex tgid=%u pid=%u\n", tgid, pid);
-//   return 0;
-// }
-
-// SEC("tracepoint/syscalls/sys_exit_futex")
-// int trace_exit_futex(struct trace_event_raw_sys_exit *ctx) {
-//   u64 id = bpf_get_current_pid_tgid();
-//   u32 tgid = id >> 32;
-//   if (!allowed_tgid(tgid))
-//     return 0;
-
-//   u32 pid = (u32)id;
-
-//   bpf_printk("tracepoint: sys_exit_futex tgid=%u pid=%u\n", tgid, pid);
-//   return 0;
-// }
+  // bpf_printk("tracepoint: sys_exit_futex tgid=%u pid=%u\n", tgid, pid);
+  return exit_event(pid, FUTEX);
+}
 
 // Userspace barrier wait call
 // SEC("uprobe/libc.so.6:pthread_barrier_wait")

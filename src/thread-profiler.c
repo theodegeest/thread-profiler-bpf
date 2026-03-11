@@ -230,6 +230,7 @@ int main(int argc, char **argv) {
     while (1) {
       key = next_key;
 
+      // TODO: Add the delta from cutoff to a component
       if (bpf_map_lookup_elem(map_fd, &key, &value) == 0) {
         printf("%d %llu %llu %llu %llu %llu %llu %llu %lu\n", key,
                value.block_index, value.block_start_ts, value.last_event_ts,
