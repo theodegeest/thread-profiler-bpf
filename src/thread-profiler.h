@@ -18,9 +18,12 @@ typedef enum thread_state {
   THREAD_EXIT = 7,
 } thread_state_t;
 
-const char *thread_state_name[] = {
+static const char *const thread_state_name[] = {
     "ERROR_STATE", "SCHEDULED_OUT", "SCHEDULED_IN",  "MUTEX_WAIT",
     "FUTEX",       "DISK_IO",       "THREAD_CREATE", "THREAD_EXIT"};
+
+#define THREAD_STATE_NAME_COUNT                                                \
+  (sizeof(thread_state_name) / sizeof(thread_state_name[0]))
 
 #define STATE_STACK_MAX_DEPTH 5
 struct internal_thread_info {
@@ -38,32 +41,70 @@ struct internal_thread_info {
   unsigned int state_depth;
 };
 
-static thread_state_t state_stack_peek(struct internal_thread_info *info_p) {
-  unsigned int depth = info_p->state_depth;
-  if (depth >= 0 && depth < STATE_STACK_MAX_DEPTH) {
-    return info_p->state_stack[depth];
-  } else {
+static inline thread_state_t
+state_stack_peek(struct internal_thread_info *info_p) {
+  if (!info_p)
     return ERROR_STATE;
-  }
+  if (info_p->state_depth == 0)
+    return ERROR_STATE;
+  unsigned int idx = info_p->state_depth - 1;
+  if (idx < STATE_STACK_MAX_DEPTH)
+    return info_p->state_stack[idx];
+  return ERROR_STATE;
 }
 
-static thread_state_t state_stack_pop(struct internal_thread_info *info_p) {
-  if (info_p->state_depth > 0) {
-    return info_p->state_stack[info_p->state_depth--];
-  } else {
+static inline thread_state_t
+state_stack_pop(struct internal_thread_info *info_p) {
+  if (!info_p)
     return ERROR_STATE;
-  }
+  if (info_p->state_depth == 0)
+    return ERROR_STATE;
+  info_p->state_depth--;
+  unsigned int idx = info_p->state_depth;
+  if (idx < STATE_STACK_MAX_DEPTH)
+    return info_p->state_stack[idx];
+  return ERROR_STATE;
 }
 
-static int state_stack_push(struct internal_thread_info *info_p,
-                            thread_state_t state) {
-  if (info_p->state_depth < STATE_STACK_MAX_DEPTH - 1) {
-    info_p->state_stack[++(info_p->state_depth)] = state;
-    return 1;
-  } else {
+static inline int state_stack_push(struct internal_thread_info *info_p,
+                                   thread_state_t state) {
+  if (!info_p)
     return 0;
+  if (info_p->state_depth < STATE_STACK_MAX_DEPTH) {
+    unsigned int idx = info_p->state_depth;
+    info_p->state_stack[idx] = state;
+    info_p->state_depth++;
+    return 1;
   }
+  return 0;
 }
+
+// static thread_state_t state_stack_peek(struct internal_thread_info *info_p) {
+//   unsigned int depth = info_p->state_depth;
+//   if (depth >= 0 && depth < STATE_STACK_MAX_DEPTH) {
+//     return info_p->state_stack[depth];
+//   } else {
+//     return ERROR_STATE;
+//   }
+// }
+
+// static thread_state_t state_stack_pop(struct internal_thread_info *info_p) {
+//   if (info_p->state_depth > 0) {
+//     return info_p->state_stack[info_p->state_depth--];
+//   } else {
+//     return ERROR_STATE;
+//   }
+// }
+
+// static int state_stack_push(struct internal_thread_info *info_p,
+//                             thread_state_t state) {
+//   if (info_p->state_depth < STATE_STACK_MAX_DEPTH - 1) {
+//     info_p->state_stack[++(info_p->state_depth)] = state;
+//     return 1;
+//   } else {
+//     return 0;
+//   }
+// }
 
 struct profile_block {
   int tid;
