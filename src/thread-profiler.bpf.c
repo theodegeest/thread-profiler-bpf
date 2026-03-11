@@ -118,13 +118,11 @@ static int submit_current_block(pid_t pid,
   return 0;
 }
 
-// TODO: maybe remove last event on current time?
-// TODO: start_of_block -> start_of_nth_block
 static int bump_block(struct internal_thread_info *info_p,
-                      u64 current_block_index, u64 current_time_ts) {
+                      u64 current_block_index) {
   info_p->block_index = current_block_index;
   info_p->block_start_ts =
-      start_of_block(current_time_ts, info_p->thread_creation_ts);
+      start_of_nth_block(info_p->thread_creation_ts, current_block_index);
   // info_p->first_block_event_ts = current_time_ts;
   info_p->last_event_ts = info_p->block_start_ts;
   info_p->offcpu_time_ns = 0;
@@ -239,7 +237,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
         info_p->last_event_ts =
             start_of_nth_block(info_p->thread_creation_ts, current_block_index);
         submit_current_block(pid, info_p);
-        bump_block(info_p, current_block_index, current_time);
+        bump_block(info_p, current_block_index);
       }
     }
 
@@ -357,7 +355,7 @@ skip_prev:
       info_p->offcpu_time_ns += block_end - info_p->block_start_ts;
       info_p->last_event_ts = block_end;
       submit_current_block(pid, info_p);
-      bump_block(info_p, current_block_index, current_time);
+      bump_block(info_p, current_block_index);
     }
 
     // delta =
@@ -530,7 +528,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
       }
       info_p->last_event_ts = block_end;
       submit_current_block(pid, info_p);
-      bump_block(info_p, current_block_index, current_time_ts);
+      bump_block(info_p, current_block_index);
     }
 
     // submit_current_block(pid, info_p);
