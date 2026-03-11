@@ -203,7 +203,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
     }
 
     state = state_stack_peek(info_p);
-    if (state == MUTEX_WAIT || state == FUTEX || state == DISK_IO) {
+    if (state == MUTEX || state == FUTEX || state == DISK_IO) {
       // The top of the state stack is an event where we ignore schedule out
       thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state : ERROR_STATE;
       bpf_printk("handle_sched_switch: prev skip (%d) %s", pid,
@@ -273,7 +273,7 @@ skip_prev:
   }
 
   state = state_stack_peek(info_p);
-  if (state == MUTEX_WAIT || state == FUTEX || state == DISK_IO) {
+  if (state == MUTEX || state == FUTEX || state == DISK_IO) {
     // The top of the state stack is an event where we ignore schedule in
     thread_state_t s = state < THREAD_STATE_NAME_COUNT ? state : ERROR_STATE;
     bpf_printk("handle_sched_switch: next skip (%d) %s", pid,
@@ -488,7 +488,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
     case SCHEDULED_OUT:
       info_p->offcpu_time_ns += delta;
       break;
-    case MUTEX_WAIT:
+    case MUTEX:
       info_p->mutex_time_ns += delta;
       break;
     case FUTEX:
@@ -505,7 +505,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
     make_next_block(info_p);
     if (current_block_index > info_p->block_index) {
       // There was at least one granularity_ns in between, submit a block of
-      // that size NOTE: We do not add any components (all 0)
+      // that size
 
       block_end =
           start_of_nth_block(info_p->thread_creation_ts, current_block_index);
@@ -514,7 +514,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
       case SCHEDULED_OUT:
         info_p->offcpu_time_ns += delta;
         break;
-      case MUTEX_WAIT:
+      case MUTEX:
         info_p->mutex_time_ns += delta;
         break;
       case FUTEX:
@@ -551,7 +551,7 @@ int trace_exit(struct trace_event_raw_sched_process_template *ctx) {
   case SCHEDULED_OUT:
     info_p->offcpu_time_ns += delta;
     break;
-  case MUTEX_WAIT:
+  case MUTEX:
     info_p->mutex_time_ns += delta;
     break;
   case FUTEX:
@@ -592,144 +592,308 @@ cleanup:
 // because we can use enums that are numbers to reference in an array so that
 // might also be a way to get the offset in the struct
 
-// static int enter_event(pid_t pid, thread_state_t new_block_state,
-//                        thread_state_t new_state) {
-//   struct internal_thread_info *info_p, info = {};
+static int enter_event(pid_t pid, thread_state_t new_block_state,
+                       thread_state_t new_state) {
+  struct internal_thread_info *info_p, info = {};
 
-//   u64 current_time, current_block_index;
+  u64 current_time, current_block_index;
+  s64 delta;
+  thread_state_t state;
 
-//   current_time = bpf_ktime_get_ns();
+  current_time = bpf_ktime_get_ns();
 
-//   info_p = bpf_map_lookup_elem(&thread_map, &pid);
-//   if (!info_p) {
-//     // There was no thread info, create new
-//     bpf_printk("enter_event: no prev thread info (%d)\n", pid);
-//     create_new_thread_info(&info, pid, new_block_state, current_time);
+  info_p = bpf_map_lookup_elem(&thread_map, &pid);
+  if (!info_p) {
+    // There was no thread info, create new
+    bpf_printk("enter_event: no prev thread info (%d)\n", pid);
+    create_new_thread_info(&info, pid, THREAD_CREATE, current_time);
 
-//     info_p = bpf_map_lookup_elem(&thread_map, &pid);
-//     if (!info_p) {
-//       bpf_printk("enter_event: Could not create thread info for "
-//                  "prev (%d)\n",
-//                  pid);
-//       return 0;
-//     }
-//   }
+    info_p = bpf_map_lookup_elem(&thread_map, &pid);
+    if (!info_p) {
+      bpf_printk("enter_event: Could not create thread info for "
+                 "prev (%d)\n",
+                 pid);
+      return 0;
+    }
+  }
 
-//   current_block_index =
-//       get_block_index(current_time, info_p->thread_creation_ts);
+  state = state_stack_peek(info_p);
 
-//   if (current_block_index > info_p->block_index) {
-//     // The last event was in a previous block
-//     // We need to submit this block to the user space
-//     submit_current_block(pid, info_p);
-//     bump_block(info_p, current_block_index, current_time);
-//   }
+  current_block_index =
+      get_block_index(current_time, info_p->thread_creation_ts);
 
-//   info_p->last_event_ts = current_time;
-//   info_p->state = new_state;
-//   return 0;
-// }
+  if (current_block_index > info_p->block_index) {
+    // The last event was in a previous block
+    // We need to submit this block to the user space
 
-// static int exit_event(pid_t pid, size_t field_offset,
-//                       thread_state_t new_block_state,
-//                       thread_state_t new_state) {
-//   struct internal_thread_info *info_p, info = {};
+    u64 block_end = info_p->block_start_ts + granularity_ns;
+    delta = block_end - info_p->last_event_ts;
+    switch (state) {
+    case SCHEDULED_OUT:
+      info_p->offcpu_time_ns += delta;
+      break;
+    case MUTEX:
+      info_p->mutex_time_ns += delta;
+      break;
+    case FUTEX:
+      info_p->futex_time_ns += delta;
+      break;
+    case DISK_IO:
+      info_p->disk_io_time_ns += delta;
+      break;
+    default:
+      break;
+    }
+    info_p->last_event_ts = block_end;
+    submit_current_block(pid, info_p);
+    make_next_block(info_p);
+    if (current_block_index > info_p->block_index) {
+      // There was at least one granularity_ns in between, submit a block of
+      // that size
 
-//   s64 delta;
+      block_end =
+          start_of_nth_block(info_p->thread_creation_ts, current_block_index);
+      delta = block_end - info_p->block_start_ts;
+      switch (state) {
+      case SCHEDULED_OUT:
+        info_p->offcpu_time_ns += delta;
+        break;
+      case MUTEX:
+        info_p->mutex_time_ns += delta;
+        break;
+      case FUTEX:
+        info_p->futex_time_ns += delta;
+        break;
+      case DISK_IO:
+        info_p->disk_io_time_ns += delta;
+        break;
+      default:
+        break;
+      }
+      info_p->last_event_ts = block_end;
+      submit_current_block(pid, info_p);
+      bump_block(info_p, current_block_index);
+    }
 
-//   u64 current_time, current_block_index;
+    // submit_current_block(pid, info_p);
+    // bump_block(info_p, current_block_index, current_time);
+  }
 
-//   u64 *field_ptr;
+  delta = current_time - info_p->last_event_ts;
+  switch (state) {
+  case SCHEDULED_OUT:
+    info_p->offcpu_time_ns += delta;
+    break;
+  case MUTEX:
+    info_p->mutex_time_ns += delta;
+    break;
+  case FUTEX:
+    info_p->futex_time_ns += delta;
+    break;
+  case DISK_IO:
+    info_p->disk_io_time_ns += delta;
+    break;
+  default:
+    break;
+  }
 
-//   current_time = bpf_ktime_get_ns();
+  info_p->last_event_ts = current_time;
+  // info_p->state = new_state;
+  switch (state) {
+  case SCHEDULED_OUT:
+  case MUTEX:
+  case FUTEX:
+  case DISK_IO:
+    state_stack_pop(info_p);
+    break;
+  default:
+    break;
+  }
+  state_stack_push(info_p, MUTEX);
+  return 0;
+}
 
-//   info_p = bpf_map_lookup_elem(&thread_map, &pid);
-//   if (!info_p) {
-//     // This thread was not yet encountered
-//     create_new_thread_info(&info, pid, new_block_state, current_time);
-//     info_p = bpf_map_lookup_elem(&thread_map, &pid);
-//     if (!info_p) {
-//       bpf_printk("exit_event: Could not create thread info for (%d)\n", pid);
-//       return 0;
-//     }
-//   }
+static int exit_event(pid_t pid, size_t field_offset,
+                      thread_state_t new_block_state,
+                      thread_state_t new_state) {
+  struct internal_thread_info *info_p, info = {};
 
-//   current_block_index =
-//       get_block_index(current_time, info_p->thread_creation_ts);
+  s64 delta;
+  thread_state_t state;
+  u64 current_time, current_block_index;
+  u64 *field_ptr;
 
-//   if (current_block_index > info_p->block_index) {
-//     // The last event was in a previous block
-//     // We need to submit this block to the user space
-//     delta =
-//         (s64)(info_p->block_start_ts + granularity_ns -
-//         info_p->last_event_ts);
-//     if (delta < 0) {
-//       bpf_printk("exit_event: delta previous block negative (%d)\n", pid);
-//       goto cleanup;
-//     }
+  current_time = bpf_ktime_get_ns();
 
-//     if (delta > granularity_ns) {
-//       bpf_printk("exit_event: WARNING (%d) delta of previous "
-//                  "block is higher than granularity_ns\n",
-//                  pid);
-//     }
+  info_p = bpf_map_lookup_elem(&thread_map, &pid);
+  if (!info_p) {
+    // This thread was not yet encountered
+    create_new_thread_info(&info, pid, THREAD_CREATE, current_time);
+    info_p = bpf_map_lookup_elem(&thread_map, &pid);
+    if (!info_p) {
+      bpf_printk("exit_event: Could not create thread info for (%d)\n", pid);
+      return 0;
+    }
+  }
 
-//     field_ptr = (u64 *)((char *)info_p + field_offset);
-//     *field_ptr += delta;
-//     info_p->last_event_ts = info_p->block_start_ts + granularity_ns;
-//     info_p->state = new_block_state;
-//     submit_current_block(pid, info_p);
-//     bump_block(info_p, current_block_index, current_time);
-//   }
+  state = state_stack_peek(info_p);
 
-//   delta = (s64)(current_time - info_p->last_event_ts);
-//   if (delta < 0) {
-//     bpf_printk("exit_event: delta current block negative (%d)\n", pid);
-//     goto cleanup;
-//   }
+  current_block_index =
+      get_block_index(current_time, info_p->thread_creation_ts);
 
-//   if (delta > granularity_ns) {
-//     bpf_printk("exit_event: WARNING (%d) delta of current block is "
-//                "higher than granularity_ns\n",
-//                pid);
-//   }
+  if (current_block_index > info_p->block_index) {
+    // The last event was in a previous block
+    // We need to submit this block to the user space
 
-//   info_p->last_event_ts = current_time;
+    u64 block_end = info_p->block_start_ts + granularity_ns;
+    delta = block_end - info_p->last_event_ts;
+    switch (state) {
+    case SCHEDULED_OUT:
+      info_p->offcpu_time_ns += delta;
+      break;
+    case MUTEX:
+      info_p->mutex_time_ns += delta;
+      break;
+    case FUTEX:
+      info_p->futex_time_ns += delta;
+      break;
+    case DISK_IO:
+      info_p->disk_io_time_ns += delta;
+      break;
+    default:
+      break;
+    }
+    info_p->last_event_ts = block_end;
+    submit_current_block(pid, info_p);
+    make_next_block(info_p);
+    if (current_block_index > info_p->block_index) {
+      // There was at least one granularity_ns in between, submit a block of
+      // that size
 
-//   field_ptr = (u64 *)((char *)info_p + field_offset);
-//   *field_ptr += delta;
-//   info_p->state = new_state;
+      block_end =
+          start_of_nth_block(info_p->thread_creation_ts, current_block_index);
+      delta = block_end - info_p->block_start_ts;
+      switch (state) {
+      case SCHEDULED_OUT:
+        info_p->offcpu_time_ns += delta;
+        break;
+      case MUTEX:
+        info_p->mutex_time_ns += delta;
+        break;
+      case FUTEX:
+        info_p->futex_time_ns += delta;
+        break;
+      case DISK_IO:
+        info_p->disk_io_time_ns += delta;
+        break;
+      default:
+        break;
+      }
+      info_p->last_event_ts = block_end;
+      submit_current_block(pid, info_p);
+      bump_block(info_p, current_block_index);
+    }
 
-// cleanup:
-//   return 0;
-// }
+    // delta =
+    //     (s64)(info_p->block_start_ts + granularity_ns -
+    //     info_p->last_event_ts);
+    // if (delta < 0) {
+    //   bpf_printk("exit_event: delta previous block negative (%d)\n", pid);
+    //   goto cleanup;
+    // }
+
+    // if (delta > granularity_ns) {
+    //   bpf_printk("exit_event: WARNING (%d) delta of previous "
+    //              "block is higher than granularity_ns\n",
+    //              pid);
+    // }
+
+    // field_ptr = (u64 *)((char *)info_p + field_offset);
+    // *field_ptr += delta;
+    // info_p->last_event_ts = info_p->block_start_ts + granularity_ns;
+    // info_p->state = new_block_state;
+    // submit_current_block(pid, info_p);
+    // bump_block(info_p, current_block_index, current_time);
+  }
+
+  delta = current_time - info_p->last_event_ts;
+  switch (state) {
+  case SCHEDULED_OUT:
+    info_p->offcpu_time_ns += delta;
+    break;
+  case MUTEX:
+    info_p->mutex_time_ns += delta;
+    break;
+  case FUTEX:
+    info_p->futex_time_ns += delta;
+    break;
+  case DISK_IO:
+    info_p->disk_io_time_ns += delta;
+    break;
+  default:
+    break;
+  }
+
+  // delta = (s64)(current_time - info_p->last_event_ts);
+  // if (delta < 0) {
+  //   bpf_printk("exit_event: delta current block negative (%d)\n", pid);
+  //   goto cleanup;
+  // }
+
+  // if (delta > granularity_ns) {
+  //   bpf_printk("exit_event: WARNING (%d) delta of current block is "
+  //              "higher than granularity_ns\n",
+  //              pid);
+  // }
+
+  // info_p->last_event_ts = current_time;
+
+  // field_ptr = (u64 *)((char *)info_p + field_offset);
+  // *field_ptr += delta;
+
+  // info_p->state = new_state;
+
+  switch (state) {
+  case SCHEDULED_OUT: // This one would be weird
+  case MUTEX:
+  case FUTEX:   // I would expect it to already be gone
+  case DISK_IO: // Maybe the IO uses locks? TODO: maybe look into this
+    state_stack_pop(info_p);
+    break;
+  default:
+    break;
+  }
+
+cleanup:
+  return 0;
+}
 
 // Userspace mutex lock call
-// SEC("uprobe/libc.so.6:__pthread_mutex_lock")
-// int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
-//   u64 id = bpf_get_current_pid_tgid();
-//   u32 tgid = id >> 32;
-//   if (!allowed_tgid(tgid))
-//     return 0;
+SEC("uprobe/libc.so.6:__pthread_mutex_lock")
+int BPF_PROG(uprobe_pthread_mutex_lock, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
 
-//   u32 pid = (u32)id;
+  u32 pid = (u32)id;
 
-//   return enter_event(pid, SCHEDULED_IN, MUTEX_WAIT);
-// }
+  return enter_event(pid, SCHEDULED_IN, MUTEX);
+}
 
 // Userspace mutex lock return
-// SEC("uretprobe/libc.so.6:__pthread_mutex_lock")
-// int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
-//   u64 id = bpf_get_current_pid_tgid();
-//   u32 tgid = id >> 32;
-//   if (!allowed_tgid(tgid))
-//     return 0;
+SEC("uretprobe/libc.so.6:__pthread_mutex_lock")
+int BPF_PROG(uretprobe_pthread_mutex_lock, void *unused) {
+  u64 id = bpf_get_current_pid_tgid();
+  u32 tgid = id >> 32;
+  if (!allowed_tgid(tgid))
+    return 0;
 
-//   u32 pid = (u32)id;
+  u32 pid = (u32)id;
 
-//   size_t offset = offsetof(struct internal_thread_info, mutex_wait_time_ns);
-//   return exit_event(pid, offset, MUTEX_WAIT, SCHEDULED_IN);
-// }
+  size_t offset = offsetof(struct internal_thread_info, mutex_time_ns);
+  return exit_event(pid, offset, MUTEX, SCHEDULED_IN);
+}
 
 // This is only the read system call
 // SEC("tracepoint/syscalls/sys_enter_futex")
