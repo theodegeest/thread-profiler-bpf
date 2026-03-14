@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
 #include <argp.h>
+#include <asm/unistd.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <linux/perf_event.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "thread-profiler.h"
 #include "thread-profiler.skel.h"
@@ -15,7 +18,8 @@
 static struct env {
   unsigned long long granularity_ns;
   pid_t pid;
-} env = {.granularity_ns = 1e8};
+  int freq;
+} env = {.granularity_ns = 1e8, .freq = 99};
 
 const char *argp_program_version = "thread_profiler 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -25,12 +29,14 @@ const char argp_program_doc[] =
     "USAGE: thread-profiler [--help] [-p PID] [-t TID]"
     "EXAMPLES:\n"
     "    thread-profiler             # profile all threads until Ctrl-C\n"
-    "    thread-profiler -p 185 # only profile threads for PID 185\n";
+    "    thread-profiler -p 185 # only profile threads for PID 185\n"
+    "    thread-profiler -f 199 # sample perf events at 199HZ (default 88Hz)\n";
 
 static const struct argp_option opts[] = {
     {"pid", 'p', "PID", 0, "Profile this PID only", 0},
     {"granularity", 'g', "GRANULARITY-NS", 0,
      "Size of granularity for profile blocks in ns"},
+    {"frequency", 'f', "FREQUENCY", 0, "Sample with a certain frequency", 0},
     {},
 };
 
@@ -57,6 +63,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state) {
       env.pid = (unsigned long long)number;
     }
     break;
+  case 'f':
+    errno = 0;
+    env.freq = strtol(arg, NULL, 10);
+    if (errno || env.freq <= 0) {
+      fprintf(stderr, "Invalid freq (in HZ): %s\n", arg);
+      argp_usage(state);
+    }
+    break;
   case ARGP_KEY_ARG:
     argp_usage(state);
     break;
@@ -71,6 +85,70 @@ static const struct argp argp = {
     .parser = parse_arg,
     .doc = argp_program_doc,
 };
+
+static int open_and_attach_perf_event(int freq,
+                                      struct thread_profiler_bpf *skel,
+                                      struct bpf_link *links[], int leader_fd,
+                                      enum perf_hw_id event, int cpu,
+                                      struct bpf_program *prog,
+                                      int perf_event_id) {
+  int fd;
+
+  struct perf_event_attr attr = {
+      .type = PERF_TYPE_HARDWARE,
+      .freq = 1,
+      .sample_freq = freq,
+      .config = event,
+  };
+  attr.size = sizeof(attr);
+  // Create group
+  fd = syscall(__NR_perf_event_open, &attr, -1, cpu, leader_fd, 0);
+  if (fd < 0) {
+    /* Ignore CPU that is offline */
+    if (errno == ENODEV)
+      return -1;
+    fprintf(stderr, "failed to init perf sampling: %s\n", strerror(errno));
+    return -1;
+  }
+  links[cpu * PERF_EVENT_NR + perf_event_id] =
+      bpf_program__attach_perf_event(prog, fd);
+  if (!links[cpu * PERF_EVENT_NR + perf_event_id]) {
+    fprintf(stderr, "failed to attach perf event on cpu: %d\n", cpu);
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+static int nr_cpus;
+
+static int open_and_attach_perf_events(int freq,
+                                       struct thread_profiler_bpf *skel,
+                                       struct bpf_link *links[]) {
+  int i, fd, leader_fd;
+
+  for (i = 0; i < nr_cpus; i++) {
+    leader_fd = open_and_attach_perf_event(freq, skel, links, -1,
+                                           PERF_COUNT_HW_CPU_CYCLES, i,
+                                           skel->progs.sample_cycles, 0);
+    if (leader_fd < 0)
+      return 1;
+
+    fd = open_and_attach_perf_event(freq, skel, links, -1,
+                                    PERF_COUNT_HW_INSTRUCTIONS, i,
+                                    skel->progs.sample_instructions, 1);
+    if (fd < 0)
+      return 1;
+
+    fd = open_and_attach_perf_event(freq, skel, links, -1,
+                                    PERF_COUNT_HW_CACHE_MISSES, i,
+                                    skel->progs.sample_cache_misses, 2);
+    if (fd < 0)
+      return 1;
+  }
+
+  return 0;
+}
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format,
                            va_list args) {
@@ -106,7 +184,8 @@ uint64_t get_current_time_ns() {
 int main(int argc, char **argv) {
   struct ring_buffer *rb = NULL;
   struct thread_profiler_bpf *skel;
-  int err;
+  struct bpf_link *links[MAX_CPU_NR * PERF_EVENT_NR] = {};
+  int err, i;
 
   /* Parse command line arguments */
   err = argp_parse(&argp, argc, argv, 0, NULL, NULL);
@@ -119,6 +198,18 @@ int main(int argc, char **argv) {
   /* Cleaner handling of Ctrl-C */
   signal(SIGINT, sig_handler);
   signal(SIGTERM, sig_handler);
+
+  nr_cpus = libbpf_num_possible_cpus();
+  if (nr_cpus < 0) {
+    fprintf(stderr, "failed to get # of possible cpus: '%s'!\n",
+            strerror(-nr_cpus));
+    return 1;
+  }
+  if (nr_cpus > MAX_CPU_NR) {
+    fprintf(stderr, "the number of cpu cores is too big, please "
+                    "increase MAX_CPU_NR's value and recompile");
+    return 1;
+  }
 
   /* Load and verify BPF application */
   skel = thread_profiler_bpf__open();
@@ -149,6 +240,12 @@ int main(int argc, char **argv) {
   if (!rb) {
     err = -1;
     fprintf(stderr, "Failed to create ring buffer\n");
+    goto cleanup;
+  }
+
+  err = open_and_attach_perf_events(env.freq, skel, links);
+  if (err) {
+    fprintf(stderr, "Failed to attach perf events\n");
     goto cleanup;
   }
 
@@ -247,6 +344,8 @@ int main(int argc, char **argv) {
 cleanup:
   /* Clean up */
   ring_buffer__free(rb);
+  for (i = 0; i < nr_cpus * PERF_EVENT_NR; i++)
+    bpf_link__destroy(links[i]);
   thread_profiler_bpf__destroy(skel);
 
   return err < 0 ? -err : 0;

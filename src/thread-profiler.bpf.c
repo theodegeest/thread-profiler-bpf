@@ -795,3 +795,69 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx) {
 //   bpf_printk("tracepoint: sys_exit_read tgid=%u pid=%u\n", tgid, pid);
 //   return 0;
 // }
+
+SEC("perf_event")
+int sample_cycles(struct bpf_perf_event_data *ctx) {
+  u64 *valp;
+  static const u64 zero;
+  u64 id;
+  u32 tgid;
+  u32 pid;
+
+  id = bpf_get_current_pid_tgid();
+  tgid = id >> 32;
+  pid = (u32)id;
+
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u64 period = ctx->sample_period;
+  bpf_printk("perf_event: sample_cycles tgid=%u, pid=%u, period=%llu\n", tgid,
+             pid, period);
+
+  return 0;
+}
+
+SEC("perf_event")
+int sample_instructions(struct bpf_perf_event_data *ctx) {
+  u64 *valp;
+  static const u64 zero;
+  u64 id;
+  u32 tgid;
+  u32 pid;
+
+  id = bpf_get_current_pid_tgid();
+  tgid = id >> 32;
+  pid = (u32)id;
+
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u64 period = ctx->sample_period;
+  bpf_printk("perf_event: sample_instructions tgid=%u, pid=%u, period=%llu\n",
+             tgid, pid, period);
+
+  return 0;
+}
+
+SEC("perf_event")
+int sample_cache_misses(struct bpf_perf_event_data *ctx) {
+  u64 *valp;
+  static const u64 zero;
+  u64 id;
+  u32 tgid;
+  u32 pid;
+
+  id = bpf_get_current_pid_tgid();
+  tgid = id >> 32;
+  pid = (u32)id;
+
+  if (!allowed_tgid(tgid))
+    return 0;
+
+  u64 period = ctx->sample_period;
+  bpf_printk("perf_event: sample_cache_misses tgid=%u, pid=%u, period=%llu\n",
+             tgid, pid, period);
+
+  return 0;
+}
