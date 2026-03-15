@@ -476,8 +476,11 @@ static int exit_event(pid_t pid, thread_state_t calling_state) {
     switch (state) {
     case SCHEDULED_OUT: // This one would be weird
     case MUTEX:
-    case FUTEX:   // I would expect it to already be gone
     case DISK_IO: // Maybe the IO uses locks? TODO: maybe look into this
+      state_stack_pop(info_p);
+      break;
+    case FUTEX:   // I would expect it to already be gone
+      state_stack_pop(info_p);
       state_stack_pop(info_p);
       break;
     default:
