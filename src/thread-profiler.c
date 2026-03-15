@@ -243,11 +243,11 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
 
-  err = open_and_attach_perf_events(env.freq, skel, links);
-  if (err) {
-    fprintf(stderr, "Failed to attach perf events\n");
-    goto cleanup;
-  }
+  // err = open_and_attach_perf_events(env.freq, skel, links);
+  // if (err) {
+  //   fprintf(stderr, "Failed to attach perf events\n");
+  //   goto cleanup;
+  // }
 
   /* Attach tracepoints */
   err = thread_profiler_bpf__attach(skel);
