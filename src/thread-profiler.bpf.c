@@ -200,7 +200,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
                                struct task_struct *prev,
                                struct task_struct *next) {
   s64 delta;
-  pid_t pid, tgid;
+  pid_t prev_pid, prev_tgid, next_pid, next_tgid;
   u64 current_time, current_block_index;
   thread_state_t state;
   u64 block_end;
@@ -208,27 +208,38 @@ static int handle_sched_switch(void *ctx, bool preempt,
   struct internal_thread_info *info_p, info = {};
 
   // Handle the task that is scheduled out
-  pid = BPF_CORE_READ(prev, pid);
-  tgid = BPF_CORE_READ(prev, tgid);
+  // pid = BPF_CORE_READ(prev, pid);
+  // tgid = BPF_CORE_READ(prev, tgid);
+
+  prev_pid = prev->pid;
+  prev_tgid = prev->tgid;
+  next_pid = next->pid;
+  next_tgid = next->tgid;
+
+  bool prev_ok = prev_pid && allowed_tgid(prev_tgid);
+  bool next_ok = next_pid && allowed_tgid(next_tgid);
+
+  if (!prev_ok && !next_ok)
+    return 0;
 
   // bpf_printk("handle_sched_switch [%d] from (%d, %d) to (%d, %d)\n",
   //            bpf_get_smp_processor_id(), pid, tgid, BPF_CORE_READ(next, pid),
   //            BPF_CORE_READ(next, tgid));
-  current_time = bpf_ktime_get_ns();
 
   // The scheduled out thread was not the idle thread
-  if (pid && allowed_tgid(tgid)) {
-    info_p = bpf_map_lookup_elem(&thread_map, &pid);
+  if (prev_ok) {
+    current_time = bpf_ktime_get_ns();
+    info_p = bpf_map_lookup_elem(&thread_map, &prev_pid);
     if (!info_p) {
       // There was no thread info, create new
-      bpf_printk("handle_sched_switch: no prev thread info (%d)\n", pid);
-      create_new_thread_info(&info, pid, THREAD_CREATE, current_time);
+      // bpf_printk("handle_sched_switch: no prev thread info (%d)\n", pid);
+      create_new_thread_info(&info, prev_pid, THREAD_CREATE, current_time);
 
-      info_p = bpf_map_lookup_elem(&thread_map, &pid);
+      info_p = bpf_map_lookup_elem(&thread_map, &prev_pid);
       if (!info_p) {
         bpf_printk(
             "handle_sched_switch: Could not create thread info for prev (%d)\n",
-            pid);
+            prev_pid);
         return 0;
       }
     }
@@ -242,7 +253,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
     if (state == SCHEDULED_OUT) {
       bpf_printk("handle_sched_switch: WARNING prev schedule out but it has "
                  "state SCHEDULED_OUT (%d)",
-                 pid);
+                 prev_pid);
     }
 
     current_block_index =
@@ -254,7 +265,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
       // components to update, just submit this block to the userspace.
 
       info_p->last_event_ts = info_p->block_start_ts + granularity_ns;
-      submit_current_block(pid, info_p);
+      submit_current_block(prev_pid, info_p);
       block_bump_one(info_p);
       if (current_block_index > info_p->block_index) {
         // There was at least one granularity_ns in between, submit a block of
@@ -262,7 +273,7 @@ static int handle_sched_switch(void *ctx, bool preempt,
         // were no slowdowns detected.
         info_p->last_event_ts = get_start_of_nth_block(
             info_p->thread_creation_ts, current_block_index);
-        submit_current_block(pid, info_p);
+        submit_current_block(prev_pid, info_p);
         block_bump_to_n(info_p, current_block_index);
       }
     }
@@ -274,23 +285,25 @@ static int handle_sched_switch(void *ctx, bool preempt,
 skip_prev:
 
   // Handle the task that is just scheduled in
-  pid = BPF_CORE_READ(next, pid);
-  tgid = BPF_CORE_READ(next, tgid);
+  // pid = BPF_CORE_READ(next, pid);
+  // tgid = BPF_CORE_READ(next, tgid);
 
   // The newly scheduled thread is the idle thread
-  if (!pid || !allowed_tgid(tgid))
+  if (!next_ok)
     return 0;
 
-  info_p = bpf_map_lookup_elem(&thread_map, &pid);
+  current_time = bpf_ktime_get_ns();
+
+  info_p = bpf_map_lookup_elem(&thread_map, &next_pid);
   if (!info_p) {
     // This thread was not yet encountered
-    bpf_printk("handle_sched_switch: no next thread info (%d)\n", pid);
-    create_new_thread_info(&info, pid, THREAD_CREATE, current_time);
-    info_p = bpf_map_lookup_elem(&thread_map, &pid);
+    // bpf_printk("handle_sched_switch: no next thread info (%d)\n", pid);
+    create_new_thread_info(&info, next_pid, THREAD_CREATE, current_time);
+    info_p = bpf_map_lookup_elem(&thread_map, &next_pid);
     if (!info_p) {
       bpf_printk(
           "handle_sched_switch: Could not create thread info for next (%d)\n",
-          pid);
+          next_pid);
       return 0;
     }
   }
@@ -304,7 +317,7 @@ skip_prev:
   if (state == SCHEDULED_IN) {
     bpf_printk("handle_sched_switch: WARNING next schedule in but it has "
                "state SCHEDULED_IN (%d)",
-               pid);
+               next_pid);
   }
 
   if (state == SCHEDULED_OUT) {
@@ -322,7 +335,7 @@ skip_prev:
     block_end = info_p->block_start_ts + granularity_ns;
     info_p->offcpu_time_ns += block_end - info_p->last_event_ts;
     info_p->last_event_ts = block_end;
-    submit_current_block(pid, info_p);
+    submit_current_block(next_pid, info_p);
     block_bump_one(info_p);
     if (current_block_index > info_p->block_index) {
       // There was at least one granularity_ns in between, submit a block of
@@ -331,7 +344,7 @@ skip_prev:
                                          current_block_index);
       info_p->offcpu_time_ns += block_end - info_p->block_start_ts;
       info_p->last_event_ts = block_end;
-      submit_current_block(pid, info_p);
+      submit_current_block(next_pid, info_p);
       block_bump_to_n(info_p, current_block_index);
     }
   }
@@ -340,14 +353,14 @@ skip_prev:
   if (delta < 0) {
     bpf_printk(
         "handle_sched_switch: WARNING next delta current block negative (%d)\n",
-        pid);
+        next_pid);
     goto cleanup;
   }
 
   if (delta > granularity_ns) {
     bpf_printk("handle_sched_switch: WARNING (%d) delta of current block is "
                "higher than granularity_ns\n",
-               pid);
+               next_pid);
   }
 
   info_p->last_event_ts = current_time;
@@ -833,8 +846,8 @@ int sample_cycles(struct bpf_perf_event_data *ctx) {
     return 0;
 
   u64 period = ctx->sample_period;
-  // bpf_printk("perf_event: sample_cycles tgid=%u, pid=%u, period=%llu\n", tgid,
-  //            pid, period);
+  // bpf_printk("perf_event: sample_cycles tgid=%u, pid=%u, period=%llu\n",
+  // tgid, pid, period);
 
   return 0;
 }
@@ -855,8 +868,8 @@ int sample_cycles(struct bpf_perf_event_data *ctx) {
 //     return 0;
 
 //   u64 period = ctx->sample_period;
-//   bpf_printk("perf_event: sample_instructions tgid=%u, pid=%u, period=%llu\n",
-//              tgid, pid, period);
+//   bpf_printk("perf_event: sample_instructions tgid=%u, pid=%u,
+//   period=%llu\n", tgid, pid, period);
 
 //   return 0;
 // }
@@ -877,8 +890,8 @@ int sample_cache_misses(struct bpf_perf_event_data *ctx) {
     return 0;
 
   u64 period = ctx->sample_period;
-  // bpf_printk("perf_event: sample_cache_misses tgid=%u, pid=%u, period=%llu\n",
-  //            tgid, pid, period);
+  // bpf_printk("perf_event: sample_cache_misses tgid=%u, pid=%u,
+  // period=%llu\n", tgid, pid, period);
 
   return 0;
 }
