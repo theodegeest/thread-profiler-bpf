@@ -480,7 +480,7 @@ static int exit_event(pid_t pid, thread_state_t calling_state) {
     case DISK_IO: // Maybe the IO uses locks? TODO: maybe look into this
       state_stack_pop(info_p);
       break;
-    case FUTEX:   // I would expect it to already be gone
+    case FUTEX: // I would expect it to already be gone
       state_stack_pop(info_p);
       state_stack_pop(info_p);
       break;
@@ -800,6 +800,23 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx) {
 //   return 0;
 // }
 
+// TODO:
+// the plan is as follows first we will count the cache miss rate so for this we
+// need to know how much of the cache references are successful and how much of
+// them miss with this rate we can estimate the number of stall cycles due to
+// these memory misses memory cache misses using this number of stalled cycles
+// can estimate the fraction of the cycles since the last measurements that were
+// stalled. using this fraction we can then estimate the time lost in a
+// performance block due to memory contention note that the stalled cycles
+// should only be looking at the scheduled in time because cache misses when
+// another event happens is already accounted for. it might be necessary to
+// somehow interpolate the values because the frequency of the performance event
+// is different than that of the other events so it might be necessary to
+// interpolate values considering the already known timestamps.
+//
+// nr_cycles_per_miss = 100
+// nr_stalled_cycles = nr_misses * <nr_cycles_per_miss>
+// stalled_cycle_fraction = nr_stalled_cycles / cycles
 SEC("perf_event")
 int sample_cycles(struct bpf_perf_event_data *ctx) {
   u64 *valp;
@@ -816,33 +833,33 @@ int sample_cycles(struct bpf_perf_event_data *ctx) {
     return 0;
 
   u64 period = ctx->sample_period;
-  bpf_printk("perf_event: sample_cycles tgid=%u, pid=%u, period=%llu\n", tgid,
-             pid, period);
+  // bpf_printk("perf_event: sample_cycles tgid=%u, pid=%u, period=%llu\n", tgid,
+  //            pid, period);
 
   return 0;
 }
 
-SEC("perf_event")
-int sample_instructions(struct bpf_perf_event_data *ctx) {
-  u64 *valp;
-  static const u64 zero;
-  u64 id;
-  u32 tgid;
-  u32 pid;
+// SEC("perf_event")
+// int sample_instructions(struct bpf_perf_event_data *ctx) {
+//   u64 *valp;
+//   static const u64 zero;
+//   u64 id;
+//   u32 tgid;
+//   u32 pid;
 
-  id = bpf_get_current_pid_tgid();
-  tgid = id >> 32;
-  pid = (u32)id;
+//   id = bpf_get_current_pid_tgid();
+//   tgid = id >> 32;
+//   pid = (u32)id;
 
-  if (!allowed_tgid(tgid))
-    return 0;
+//   if (!allowed_tgid(tgid))
+//     return 0;
 
-  u64 period = ctx->sample_period;
-  bpf_printk("perf_event: sample_instructions tgid=%u, pid=%u, period=%llu\n",
-             tgid, pid, period);
+//   u64 period = ctx->sample_period;
+//   bpf_printk("perf_event: sample_instructions tgid=%u, pid=%u, period=%llu\n",
+//              tgid, pid, period);
 
-  return 0;
-}
+//   return 0;
+// }
 
 SEC("perf_event")
 int sample_cache_misses(struct bpf_perf_event_data *ctx) {
@@ -860,8 +877,30 @@ int sample_cache_misses(struct bpf_perf_event_data *ctx) {
     return 0;
 
   u64 period = ctx->sample_period;
-  bpf_printk("perf_event: sample_cache_misses tgid=%u, pid=%u, period=%llu\n",
-             tgid, pid, period);
+  // bpf_printk("perf_event: sample_cache_misses tgid=%u, pid=%u, period=%llu\n",
+  //            tgid, pid, period);
 
   return 0;
 }
+
+// SEC("perf_event")
+// int sample_cache_ref(struct bpf_perf_event_data *ctx) {
+//   u64 *valp;
+//   static const u64 zero;
+//   u64 id;
+//   u32 tgid;
+//   u32 pid;
+
+//   id = bpf_get_current_pid_tgid();
+//   tgid = id >> 32;
+//   pid = (u32)id;
+
+//   if (!allowed_tgid(tgid))
+//     return 0;
+
+//   u64 period = ctx->sample_period;
+//   bpf_printk("perf_event: sample_cache_ref tgid=%u, pid=%u, period=%llu\n",
+//              tgid, pid, period);
+
+//   return 0;
+// }

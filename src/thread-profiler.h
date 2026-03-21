@@ -4,7 +4,7 @@
 #define __THREAD_PROFILER_H
 
 #define MAX_CPU_NR	128
-#define PERF_EVENT_NR 3
+#define PERF_EVENT_NR 2
 #define TASK_COMM_LEN 16
 #define MAX_PID_NR 30
 #define MAX_TID_NR 30

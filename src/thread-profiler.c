@@ -134,17 +134,23 @@ static int open_and_attach_perf_events(int freq,
     if (leader_fd < 0)
       return 1;
 
-    fd = open_and_attach_perf_event(freq, skel, links, -1,
-                                    PERF_COUNT_HW_INSTRUCTIONS, i,
-                                    skel->progs.sample_instructions, 1);
-    if (fd < 0)
-      return 1;
+    // fd = open_and_attach_perf_event(freq, skel, links, -1,
+    //                                 PERF_COUNT_HW_INSTRUCTIONS, i,
+    //                                 skel->progs.sample_instructions, 1);
+    // if (fd < 0)
+    //   return 1;
 
     fd = open_and_attach_perf_event(freq, skel, links, -1,
                                     PERF_COUNT_HW_CACHE_MISSES, i,
-                                    skel->progs.sample_cache_misses, 2);
+                                    skel->progs.sample_cache_misses, 1);
     if (fd < 0)
       return 1;
+
+    // fd = open_and_attach_perf_event(freq, skel, links, -1,
+    //                                 PERF_COUNT_HW_CACHE_REFERENCES, i,
+    //                                 skel->progs.sample_cache_ref, 3);
+    // if (fd < 0)
+    //   return 1;
   }
 
   return 0;
