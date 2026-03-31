@@ -830,6 +830,11 @@ int trace_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx) {
 // nr_cycles_per_miss = 100
 // nr_stalled_cycles = nr_misses * <nr_cycles_per_miss>
 // stalled_cycle_fraction = nr_stalled_cycles / cycles
+//
+//
+// What about:
+// extra_cycles = (CPI_benchmark - CPI_baseline) × nr_instruction
+// extra_time   = extra_cycles / clock_frequency
 SEC("perf_event")
 int sample_cycles(struct bpf_perf_event_data *ctx) {
   u64 *valp;
