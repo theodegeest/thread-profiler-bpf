@@ -1,8 +1,10 @@
 build:
 	make -C src
+	make -C base-cpi
 
 clean:
 	make -C src clean
+	make -C base-cpi clean
 
 install:
 	sudo apt update
